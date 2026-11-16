@@ -1,0 +1,12 @@
+{
+  "name": "leadtube",
+  "version": "2.0.0",
+  "private": true,
+  "description": "LeadTube: find YouTube leads in your niche. Dashboard is a Next.js app in ./dashboard.",
+  "scripts": {
+    "dev": "npm --prefix dashboard run dev",
+    "build": "npm --prefix dashboard run build",
+    "start": "npm --prefix dashboard run start"
+  },
+  "engines": { "node": ">=18.18" }
+}

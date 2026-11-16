@@ -1,0 +1,6 @@
+# Installed automatically by "Start LeadTube.command" into .venv.
+playwright>=1.47
+dnspython>=2.6
+tldextract>=5.1
+certifi>=2024.2.2
+fastembed>=0.9   # meaning fingerprints (optional; LeadTube works without it)

@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Installed / generated (recreated automatically by "Start LeadTube.command")
+.venv/
+.models/
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.next-dev/
+__pycache__/
+
+# Your data and results (personal, not code)
+data/
+results/
+
+# macOS
+.DS_Store
+
+# Editor settings
+.vscode/

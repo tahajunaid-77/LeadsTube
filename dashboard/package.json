@@ -1,0 +1,20 @@
+{
+  "name": "leadtube-dashboard",
+  "version": "2.0.0",
+  "private": true,
+  "description": "LeadTube dashboard (Next.js + React): browse leads, write your email, send to Smartlead, start searches.",
+  "scripts": {
+    "dev": "LEADTUBE_DEV=1 next dev -H 127.0.0.1 -p ${PORT:-3030}",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p ${PORT:-3030}"
+  },
+  "dependencies": {
+    "next": "15.5.27",
+    "react": "19.1.10",
+    "react-dom": "19.1.10"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "type": "module"
+}

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b6cf0"/>
+      <stop offset="1" stop-color="#1d3fb8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#g)"/>
+  <!-- magnifier lens with a play button inside: "finding channels" -->
+  <circle cx="28" cy="28" r="15" fill="none" stroke="#fff" stroke-width="5"/>
+  <path d="M24 20.5v15l12-7.5z" fill="#fff"/>
+  <path d="M39 39l11 11" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+  <!-- small green dot: a found lead -->
+  <circle cx="50" cy="14" r="6" fill="#22c55e" stroke="#1d3fb8" stroke-width="2.5"/>
+</svg>
