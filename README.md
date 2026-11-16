@@ -1,19 +1,52 @@
 # LeadTube
 
-**Find coaches, consultants and podcast hosts on YouTube who fit your ideal client, get their contact details, and send them to your outreach tool.**
+**Find YouTube creators who match your ideal customer, get their contact details, and send them to your outreach tool.**
 
-LeadTube searches YouTube for active channels in your niche, finds each one's email, website and social profiles, scores how well they fit, and learns from your feedback which leads you like best. Everything is managed from a simple dashboard on your Mac.
+You describe who you're looking for (your ICP: ideal customer profile), for example business coaches, SaaS founders, fitness trainers, real estate agents, financial advisors or podcast hosts in a certain niche. LeadTube searches YouTube for active channels that match, finds each one's email, website and social profiles, scores how well they fit, and learns from your feedback which leads you like best. Everything is managed from a simple dashboard on your Mac.
 
 <br>
 
 ## What it does
 
 - 🔎 **Finds new channels** in your niche and chosen countries that posted in the last 45 days. It never shows you the same channel twice.
-- 📧 **Finds contact emails** from the channel, the coach's website, Google and Facebook.
+- 📧 **Finds contact emails** from the channel, the creator's website, Google and Facebook.
 - 🔗 **Collects profiles**: website, LinkedIn, Facebook, Instagram, X, TikTok, podcast.
 - ⭐ **Scores every lead** from 0 to 100: *Top fit*, *Good fit*, *Possible* or *Low fit*.
 - 🧠 **Learns from you**: rate leads Good, Medium or Low and it finds more like your Good ones.
 - ✉️ **Sends to Smartlead** (or exports a CSV), with your email copy filled in for each lead.
+
+<br>
+
+## How it's different
+
+Most lead tools either give you a database of big creators, or scrape whatever is on a YouTube page. LeadTube is built around **your** ideal customer:
+
+| | Typical lead tools | LeadTube |
+|---|---|---|
+| **Who you get** | Large creators sorted by followers | Channels that match *your* ICP, scored for fit |
+| **Freshness** | Often outdated lists | Only channels that posted in the last 45 days; never the same channel twice |
+| **Emails** | Only what's on the YouTube page | YouTube, link-in-bio, the creator's website, Google and Facebook, with checks that the email is really theirs and can receive mail |
+| **Getting better** | Same results every time | Learns from your Good / Medium / Low ratings and understands meaning, not just keywords |
+| **Changing your target** | New filters or a new subscription | Edit one file (`ICP.md`) |
+| **Cost and data** | Monthly subscription; your data on their servers | Runs on your Mac with free YouTube API keys; your leads stay with you |
+
+<br>
+
+## How much time it saves
+
+Finding one good lead by hand usually means: searching YouTube, opening the channel, checking it's still active, reading the About section, judging the fit, finding their website, hunting for an email on the contact page, finding their LinkedIn, and copying it all into a sheet. That's roughly **5–10 minutes per lead**.
+
+| | By hand | With LeadTube |
+|---|---|---|
+| **100 leads** | about 8–16 hours | a few minutes to start a search, then it runs on its own |
+| **Checking they're active and on-target** | open every channel | automatic (last 45 days, ICP match) |
+| **Emails and profiles** | search each one | found automatically for every lead |
+| **Avoiding duplicates** | keep track yourself | automatic: you never see the same channel twice |
+| **Into your outreach tool** | copy and paste | one click to Smartlead or a CSV |
+
+*Estimates: actual numbers depend on your niche and how much YouTube quota you have. A single search typically adds dozens of new leads.*
+
+Your time goes into what matters: rating leads (so it improves) and writing your email.
 
 <br>
 
@@ -70,11 +103,11 @@ Every search: when it ran, how many new leads it found and how many have an emai
 
 ## Your ideal client: `ICP.md`
 
-Everything about **who LeadTube looks for** is in one file, **`ICP.md`**. Edit it in any text editor, or in the dashboard under **Settings → Ideal lead (ICP)**. No code changes needed.
+Everything about **who LeadTube looks for** is in one file, **`ICP.md`**. Point it at any niche: change the ideal-lead description, search phrases and roles, and LeadTube follows. Edit it in any text editor, or in the dashboard under **Settings → Ideal lead (ICP)**. No code changes needed.
 
 It has plain sections such as:
 - **Ideal lead:** a few sentences describing your perfect lead.
-- **Search phrases:** what LeadTube types into YouTube, e.g. `{executive|leadership} coach`.
+- **Search phrases:** what LeadTube types into YouTube, e.g. `{business|marketing} coach` or `{saas|startup} founder podcast`.
 - **Roles, topics and audience:** what makes a strong fit.
 - **Not my ICP:** topics and kinds of channels to leave out.
 
@@ -84,25 +117,25 @@ Each section explains itself. Keep the section titles as they are; the dashboard
 
 ## How it works
 
-**Finding channels.** LeadTube searches YouTube with your search phrases, page by page, and remembers where it stopped, so the next search continues instead of repeating. Once a week it also adds up to 40 phrases that mean the same as yours (from YouTube's own suggestions and word swaps like coach → mentor). A channel is kept only if it's in your countries, posted a real video (or regular Shorts) in the last 45 days, talks about your niche, and is close in meaning to your ideal lead.
+**Finding channels.** LeadTube searches YouTube with your search phrases, page by page, and remembers where it stopped, so the next search continues instead of repeating. Once a week it also adds up to 40 phrases that mean the same as yours (from YouTube's own suggestions and word swaps you define, like coach → mentor). A channel is kept only if it's in your countries, posted a real video (or regular Shorts) in the last 45 days, talks about your niche, and is close in meaning to your ideal lead.
 
 **Finding emails.** In this order, until one is found:
 1. the YouTube description,
 2. link-in-bio pages,
-3. the coach's website (homepage and contact/about pages),
+3. the creator's website (homepage and contact/about pages),
 4. a Google search,
 5. their Facebook page (only when the website has no email).
 
-Emails must clearly belong to the coach, and their domain must be able to receive mail. An **amber dot** means "found by search, worth a double-check".
+Emails must clearly belong to the creator, and their domain must be able to receive mail. An **amber dot** means "found by search, worth a double-check".
 
-**Scoring.** Every lead gets 0–100 points for things like a strong role (executive/leadership coach), your core topic, who they work with, having a podcast, being reachable (email, LinkedIn), and how close they are in meaning to your ideal lead.
+**Scoring.** Every lead gets 0–100 points for things like having the roles, topics and audience in your ICP, having a podcast, being reachable (email, LinkedIn), and how close they are in meaning to your ideal lead.
 
 **How it learns.** After **8 ratings** (with at least 2 Good and 2 Medium/Low), your ratings start shaping:
 - **Fit scores:** leads like your Good ones go up, leads like your Low ones go down (up to ±25).
 - **Searches:** phrases that found Good leads are searched deeper, and channels like your Low ones are skipped.
 - **New phrases:** learned from your Good leads.
 
-It reads mostly the channel description and recent video titles, and understands meaning (so "C-suite mentor" ≈ "executive coach") using a small AI model that runs on your Mac. The bar above your leads shows **What it learned**.
+It reads mostly the channel description and recent video titles, and understands meaning (so "personal trainer" and "online fitness coach" count as similar) using a small AI model that runs on your Mac. The bar above your leads shows **What it learned**.
 
 <br>
 
