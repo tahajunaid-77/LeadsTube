@@ -1,14 +1,15 @@
 "use client";
 import Icon from "@/components/Icon";
+import type { Limits, MailState, View } from "@/lib/types";
 
-const NAV = [
+const NAV: [View, string, string][] = [
   ["leads", "Leads", "users"],
   ["email", "Email", "mail"],
   ["runs", "Runs", "history"],
   ["settings", "Settings", "settings"],
 ];
 
-function UsageCard({ limits }) {
+function UsageCard({ limits }: { limits: Limits | null }) {
   if (!limits) return null;
   const left = limits.youtube.reduce((a, k) => a + k.left, 0);
   const quota = limits.youtube.reduce((a, k) => a + k.quota, 0) || 1;
@@ -33,9 +34,14 @@ function UsageCard({ limits }) {
   );
 }
 
-export default function Sidebar({ view, onView, limits, theme, onTheme, ready, copyReady }) {
+interface SidebarProps {
+  view: View; onView: (view: View) => void; limits: Limits | null;
+  theme: "" | "light" | "dark"; onTheme: (theme: "light" | "dark") => void;
+  ready: MailState["ready"]; copyReady: boolean;
+}
+export default function Sidebar({ view, onView, limits, theme, onTheme, ready, copyReady }: SidebarProps) {
   const active = theme || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const dots = { email: copyReady, settings: ready.smartlead };
+  const dots: Partial<Record<View, boolean>> = { email: copyReady, settings: ready.smartlead };
   return (
     <aside className="sidebar">
       <div className="brand"><img src="/favicon.svg" alt="" width={24} height={24} /><span>LeadTube</span></div>

@@ -1,5 +1,6 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   devIndicators: false,
@@ -7,4 +8,5 @@ const nextConfig = {
   // never breaks a running dev server (and the other way round).
   distDir: process.env.LEADTUBE_DEV ? ".next-dev" : ".next",
 };
+
 export default nextConfig;

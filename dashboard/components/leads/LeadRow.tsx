@@ -3,11 +3,13 @@ import Icon from "@/components/Icon";
 import { Button } from "@/components/ui";
 import { COUNTRY, ago, fitClass, fmt, handleOf } from "@/lib/client";
 import Rating from "@/components/leads/Rating";
+import type { MouseEvent } from "react";
+import type { Lead, MailState, ProfileField, RatingValue } from "@/lib/types";
 
-const PROFILES = [["website", "Website"], ["linkedin", "LinkedIn"], ["facebook", "Facebook"], ["instagram", "Instagram"],
+const PROFILES: [ProfileField, string][] = [["website", "Website"], ["linkedin", "LinkedIn"], ["facebook", "Facebook"], ["instagram", "Instagram"],
   ["twitter", "X"], ["tiktok", "TikTok"], ["podcast", "Podcast"], ["booking", "Booking"], ["channel_link", "YouTube"]];
 
-function ProfileIcons({ c }) {
+function ProfileIcons({ c }: { c: Lead }) {
   return (
     <div className="icons">
       {PROFILES.filter(([k]) => c[k]).map(([k, label]) => {
@@ -23,7 +25,7 @@ function ProfileIcons({ c }) {
   );
 }
 
-function FitBadge({ c }) {
+function FitBadge({ c }: { c: Lead }) {
   if (c.fit_score === "" || c.fit_score === undefined) return null;
   return (
     <span className={`fit fit-${fitClass(c.fit)}`} title={c.fit_label + (c.fit_reason ? ": " + c.fit_reason : "")}>
@@ -33,7 +35,7 @@ function FitBadge({ c }) {
 }
 
 // Titles of videos posted in the last 30 days (what LeadTube reads, with the description).
-function RecentVideos({ c }) {
+function RecentVideos({ c }: { c: Lead }) {
   const titles = (c.recent_videos || "").split(" | ").map(t => t.trim()).filter(Boolean);
   if (!titles.length) return <><h4>Latest video</h4><p>{c.latest_video_title || "–"}</p></>;
   return (
@@ -45,7 +47,7 @@ function RecentVideos({ c }) {
   );
 }
 
-function MailTag({ c, mail }) {
+function MailTag({ c, mail }: { c: Lead; mail: MailState }) {
   const sl = mail.smartlead[c.channel_link];
   if (sl) return <span className="mail-tag sent" title={`Added to Smartlead campaign "${sl.campaign}" on ${sl.date}`}>Smartlead</span>;
   const d = mail.drafts[c.channel_link];
@@ -55,11 +57,16 @@ function MailTag({ c, mail }) {
     : <span className="mail-tag draft" title="Draft saved">Draft</span>;
 }
 
-export default function LeadRow({ c, open, selected, contactedOn, mail, rating, onRate, onToggleOpen, onSelect, onContacted, onCompose, toast }) {
+interface LeadRowProps {
+  c: Lead; open: boolean; selected: boolean; contactedOn: string | undefined; mail: MailState;
+  rating: RatingValue | undefined; onRate: (rating: RatingValue | null) => void; onToggleOpen: () => void;
+  onSelect: () => void; onContacted: (value: boolean) => void; onCompose: () => void; toast: (msg: string) => void;
+}
+export default function LeadRow({ c, open, selected, contactedOn, mail, rating, onRate, onToggleOpen, onSelect, onContacted, onCompose, toast }: LeadRowProps) {
   const handle = handleOf(c.channel_link);
   const src = (c.email_source || "").replace(/^web search: /, "").split(";")[0].trim();
   const draft = mail.drafts[c.channel_link];
-  const stop = e => e.stopPropagation();
+  const stop = (e: MouseEvent) => e.stopPropagation();
   return (
     <>
       <tr className={`row ${contactedOn ? "done" : ""} ${selected ? "selected" : ""}`} onClick={onToggleOpen}>

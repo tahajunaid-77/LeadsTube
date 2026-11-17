@@ -2,29 +2,33 @@
 import { useEffect, useRef } from "react";
 import { Button, Field, Modal, Spinner } from "@/components/ui";
 import { api, num, useStored } from "@/lib/client";
+import type { FitGoal, Job } from "@/lib/types";
+
+type RunOptions = { target: string; days: string; keywords: string; fitGoal: FitGoal; countries: string[] };
 
 const COUNTRIES = ["US", "UK", "Canada", "Australia", "Ireland", "New Zealand", "Norway", "Netherlands", "Germany", "Singapore", "UAE"];
-const DEFAULTS = { target: "", days: "45", keywords: "", fitGoal: "good", countries: ["US", "UK", "Canada", "Norway", "Netherlands"] };
-const GOALS = [["top", "Top fit only"], ["good", "Good fit or better"], ["possible", "Possible or better"]];
+const DEFAULTS: RunOptions = { target: "", days: "45", keywords: "", fitGoal: "good", countries: ["US", "UK", "Canada", "Norway", "Netherlands"] };
+const GOALS: [FitGoal, string][] = [["top", "Top fit only"], ["good", "Good fit or better"], ["possible", "Possible or better"]];
 
-export default function FindLeadsDialog({ open, onClose, job, onStarted, toast }) {
-  const [opts, setOpts] = useStored("leads.runOpts", DEFAULTS);
-  const o = { ...DEFAULTS, ...opts, countries: Array.isArray(opts.countries) ? opts.countries : DEFAULTS.countries };
-  const set = (k, v) => setOpts({ ...o, [k]: v });
+export default function FindLeadsDialog({ open, onClose, job, onStarted, toast }:
+  { open: boolean; onClose: () => void; job: Job | null; onStarted: () => void; toast: (msg: string) => void }) {
+  const [opts, setOpts] = useStored<RunOptions>("leads.runOpts", DEFAULTS);
+  const o: RunOptions = { ...DEFAULTS, ...opts, countries: Array.isArray(opts.countries) ? opts.countries : DEFAULTS.countries };
+  const set = <K extends keyof RunOptions>(k: K, v: RunOptions[K]) => setOpts({ ...o, [k]: v });
   const running = !!job?.running;
-  const logRef = useRef(null);
+  const logRef = useRef<HTMLPreElement>(null);
   useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight; }, [job?.log]);
 
-  async function start(mode) {
+  async function start(mode: "search" | "emails") {
     try {
       await api("/api/run", mode === "emails" ? { mode } : { mode, target: o.target, countries: o.countries.join(", "), days: o.days,
         keywords: o.keywords.trim(), fitGoal: o.fitGoal });
       onStarted();
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast((e as Error).message); }
   }
   async function stop() {
     if (!confirm("Stop the current run? Channels found so far will be saved.")) return;
-    try { await api("/api/run/stop", {}); toast("Stopping… saving what was found"); } catch (e) { toast(e.message); }
+    try { await api("/api/run/stop", {}); toast("Stopping… saving what was found"); } catch (e) { toast((e as Error).message); }
   }
 
   const n = o.countries.length, t = num(o.target);
@@ -54,7 +58,7 @@ export default function FindLeadsDialog({ open, onClose, job, onStarted, toast }
           <input type="number" min={1} max={5000} placeholder="As many as possible" value={o.target} onChange={e => set("target", e.target.value)} />
         </Field>
         <Field label="Count only">
-          <select value={o.fitGoal} disabled={!num(o.target)} onChange={e => set("fitGoal", e.target.value)}
+          <select value={o.fitGoal} disabled={!num(o.target)} onChange={e => set("fitGoal", e.target.value as FitGoal)}
             title={num(o.target) ? "Which leads count toward How many. Lower-fit leads are still saved." : "Only used when How many is set"}>
             {GOALS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>

@@ -4,38 +4,44 @@ import Icon from "@/components/Icon";
 import { Button, Field, Pill, Spinner } from "@/components/ui";
 import { api, useStored } from "@/lib/client";
 import IcpEditor from "@/components/settings/IcpEditor";
+import type { ChangeEvent } from "react";
+import type { Campaign, PublicSettings, SettingsTab, Shared } from "@/lib/types";
+
+type CampaignState = { list: Campaign[] | null; error: string; loading: boolean };
+type SettingsForm = Partial<PublicSettings>;
 
 const SAVED = "· saved (leave empty to keep)";
 
-export function useCampaigns() {
-  const [state, setState] = useState({ list: null, error: "", loading: false });
-  async function load() {
+export function useCampaigns(): [CampaignState, () => Promise<Campaign[]>] {
+  const [state, setState] = useState<CampaignState>({ list: null, error: "", loading: false });
+  async function load(): Promise<Campaign[]> {
     setState(s => ({ ...s, loading: true, error: "" }));
-    try { const { campaigns } = await api("/api/smartlead/campaigns"); setState({ list: campaigns, error: "", loading: false }); return campaigns; }
-    catch (e) { setState({ list: [], error: e.message, loading: false }); throw e; }
+    try { const { campaigns } = await api<{ campaigns: Campaign[] }>("/api/smartlead/campaigns"); setState({ list: campaigns, error: "", loading: false }); return campaigns; }
+    catch (e) { setState({ list: [], error: (e as Error).message, loading: false }); throw e; }
   }
   return [state, load];
 }
 
-export default function SettingsView({ mail, loadMail, toast, tab, onTab }) {
-  const [form, setForm] = useState(null);
-  const [status, setStatus] = useState({ smartlead: "", sending: "" });
+export default function SettingsView({ mail, loadMail, toast, tab, onTab }:
+  Shared & { tab: SettingsTab; onTab: (tab: SettingsTab) => void }) {
+  const [form, setForm] = useState<SettingsForm | null>(null);
+  const [status, setStatus] = useState<Record<"smartlead" | "sending", string>>({ smartlead: "", sending: "" });
   const [busy, setBusy] = useState("");
   const [campaigns, loadCampaigns] = useCampaigns();
-  const [defaultCampaign, setDefaultCampaign] = useStored("leads.slCampaign", "");
-  const active = ["icp", "smartlead", "sending"].includes(tab) ? tab : "smartlead";
+  const [defaultCampaign, setDefaultCampaign] = useStored<string>("leads.slCampaign", "");
+  const active: SettingsTab = (["icp", "smartlead", "sending"] as SettingsTab[]).includes(tab) ? tab : "smartlead";
 
-  useEffect(() => { api("/api/settings").then(setForm).catch(() => setForm({})); }, []);
+  useEffect(() => { api<PublicSettings>("/api/settings").then(setForm).catch(() => setForm({})); }, []);
   useEffect(() => { if (mail.ready.smartlead && campaigns.list === null) loadCampaigns().catch(() => {}); },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mail.ready.smartlead]);
 
-  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
-  const say = (k, msg) => setStatus(s => ({ ...s, [k]: msg }));
+  const set = (k: keyof SettingsForm) => (e: ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const say = (k: "smartlead" | "sending", msg: string) => setStatus(s => ({ ...s, [k]: msg }));
 
-  async function save(section) {
-    const saved = await api("/api/settings", form);
-    setForm(f => ({ ...saved, from_name: f.from_name, from_email: f.from_email, smtp_host: f.smtp_host, smtp_port: f.smtp_port, daily_limit: f.daily_limit }));
+  async function save(section?: "smartlead" | "sending") {
+    const saved = await api<PublicSettings>("/api/settings", form);
+    setForm(f => ({ ...saved, from_name: f?.from_name, from_email: f?.from_email, smtp_host: f?.smtp_host, smtp_port: f?.smtp_port, daily_limit: f?.daily_limit }));
     await loadMail();
     if (section) { say(section, "Saved."); toast("Settings saved"); }
   }
@@ -44,13 +50,13 @@ export default function SettingsView({ mail, loadMail, toast, tab, onTab }) {
     try {
       await save(); const list = await loadCampaigns();
       say("smartlead", list.length ? "Connected. Pick a default campaign." : "Connected, but no active campaigns yet.");
-    } catch (e) { say("smartlead", e.message); }
+    } catch (e) { say("smartlead", (e as Error).message); }
     setBusy("");
   }
   async function testGmail() {
     setBusy("sending"); say("sending", "");
-    try { await save(); const r = await api("/api/email/test", {}); say("sending", r.message || "Login works."); }
-    catch (e) { say("sending", e.message); }
+    try { await save(); const r = await api<{ message?: string }>("/api/email/test", {}); say("sending", r.message || "Login works."); }
+    catch (e) { say("sending", (e as Error).message); }
     setBusy("");
   }
 
@@ -73,7 +79,7 @@ export default function SettingsView({ mail, loadMail, toast, tab, onTab }) {
             <div className="card">
               <div className="card-head">
                 <div><h2>Smartlead</h2><p>Send leads straight into your Smartlead campaigns.</p></div>
-                {connected ? <Pill on>Connected · {campaigns.list.length} campaign{campaigns.list.length === 1 ? "" : "s"}</Pill>
+                {connected && campaigns.list ? <Pill on>Connected · {campaigns.list.length} campaign{campaigns.list.length === 1 ? "" : "s"}</Pill>
                   : campaigns.error ? <Pill bad>Not connected</Pill>
                   : <Pill on={mail.ready.smartlead}>{mail.ready.smartlead ? "Key saved" : "Not connected"}</Pill>}
               </div>
@@ -92,7 +98,7 @@ export default function SettingsView({ mail, loadMail, toast, tab, onTab }) {
                 <span className="estimate">{busy === "smartlead" && <Spinner />}{status.smartlead}</span>
                 <span className="panel-actions">
                   <Button icon="refresh" onClick={testSmartlead} disabled={!!busy}>Test connection</Button>
-                  <Button variant="primary" icon="check" onClick={() => save("smartlead").catch(e => say("smartlead", e.message))}>Save</Button>
+                  <Button variant="primary" icon="check" onClick={() => save("smartlead").catch((e: Error) => say("smartlead", e.message))}>Save</Button>
                 </span>
               </div>
             </div>
@@ -123,7 +129,7 @@ export default function SettingsView({ mail, loadMail, toast, tab, onTab }) {
                 <span className="estimate">{busy === "sending" && <Spinner />}{status.sending}</span>
                 <span className="panel-actions">
                   <Button icon="refresh" onClick={testGmail} disabled={!!busy} title="Signs in to your email account. Sends nothing.">Test login</Button>
-                  <Button variant="primary" icon="check" onClick={() => save("sending").catch(e => say("sending", e.message))}>Save</Button>
+                  <Button variant="primary" icon="check" onClick={() => save("sending").catch((e: Error) => say("sending", e.message))}>Save</Button>
                 </span>
               </div>
             </div>

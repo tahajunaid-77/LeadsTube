@@ -1,7 +1,8 @@
 "use client";
 import { num } from "@/lib/client";
+import type { RunRow } from "@/lib/types";
 
-export default function RunsView({ runs }) {
+export default function RunsView({ runs }: { runs: RunRow[] }) {
   const max = Math.max(1, ...runs.map(r => num(r.new_channels)));
   return (
     <section className="view">

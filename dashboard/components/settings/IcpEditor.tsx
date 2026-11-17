@@ -3,37 +3,38 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Spinner } from "@/components/ui";
 import { api } from "@/lib/client";
+import type { IcpPayload } from "@/lib/types";
 
-export default function IcpEditor({ toast }) {
-  const [text, setText] = useState(null);
+export default function IcpEditor({ toast }: { toast: (msg: string) => void }) {
+  const [text, setText] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
   const [canUndo, setCanUndo] = useState(false);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
-  const area = useRef(null);
+  const area = useRef<HTMLTextAreaElement>(null);
 
-  const load = d => { setText(d.text); setSaved(d.text); setCanUndo(d.canUndo); };
-  useEffect(() => { api("/api/icp").then(load).catch(e => setStatus(e.message)); }, []);
+  const load = (d: IcpPayload) => { setText(d.text); setSaved(d.text); setCanUndo(d.canUndo); };
+  useEffect(() => { api<IcpPayload>("/api/icp").then(load).catch((e: Error) => setStatus(e.message)); }, []);
 
-  const sections = useMemo(() => (text || "").split("\n").map((l, i) => [l, i]).filter(([l]) => l.startsWith("## "))
-    .map(([l, i]) => [l.replace(/^##\s*/, ""), i]), [text]);
+  const sections = useMemo(() => (text || "").split("\n").map((l, i): [string, number] => [l, i]).filter(([l]) => l.startsWith("## "))
+    .map(([l, i]): [string, number] => [l.replace(/^##\s*/, ""), i]), [text]);
   const dirty = text !== null && text !== saved;
 
-  async function save(undo) {
+  async function save(undo: boolean) {
     setBusy(true); setStatus("");
     try {
-      load(await api("/api/icp", undo ? { undo: true } : { text }));
+      load(await api<IcpPayload>("/api/icp", undo ? { undo: true } : { text }));
       toast(undo ? "Previous ICP restored" : "ICP saved. Used from the next search.");
-    } catch (e) { setStatus(e.message); }
+    } catch (e) { setStatus((e as Error).message); }
     setBusy(false);
   }
   useEffect(() => {
-    const onKey = e => { if ((e.metaKey || e.ctrlKey) && e.key === "s" && dirty) { e.preventDefault(); save(false); } };
+    const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "s" && dirty) { e.preventDefault(); save(false); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
-  function jump(lineNo) {
-    const el = area.current; if (!el) return;
+  function jump(lineNo: number) {
+    const el = area.current; if (!el || text === null) return;
     const idx = text.split("\n").slice(0, lineNo).join("\n").length + (lineNo ? 1 : 0);
     el.focus(); el.setSelectionRange(idx, idx);
     const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;

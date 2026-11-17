@@ -1,5 +1,9 @@
 // Personalization fields for cold email tools (Smartlead, Instantly...).
 // No AI: everything comes from what LeadTube already found about the channel.
+import type { PersonalFields } from "@/lib/types";
+
+/** The lead columns personalization reads. */
+export type LeadLike = Partial<Record<"channel_name" | "description" | "best_email" | "latest_video_title" | "subscribers" | "country" | "fit_score" | "channel_link" | "website" | "linkedin", string>>;
 
 // Words that are never a first name.
 const NOT_NAMES = new Set(("the a an and of for with by to in on at my your our dr dr. mr mrs ms coach coaching coaches " +
@@ -15,10 +19,10 @@ const ROLE_INBOX = new Set(("info contact hello hi hey team admin support office
   "speaking speaker coach coaching studio news newsletter marketing hr jobs careers social community general welcome " +
   "service services customer clients client business biz host hosts editor feedback questions ask yes all me us office1 web website websitebookings").split(/\s+/));
 
-const cap = w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
-const words = s => (s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").match(/[A-Za-z][A-Za-z'’-]*/g) || [];
+const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+const words = (s: string | undefined): string[] => (s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").match(/[A-Za-z][A-Za-z'’-]*/g) || [];
 
-function firstName(c) {
+function firstName(c: LeadLike): string {
   const name = c.channel_name || "";
   const nameWords = words(name).map(w => w.toLowerCase());
   const descWords = new Set(words((c.description || "").slice(0, 300)).filter(w => /^[A-Z][a-z]/.test(w)).map(w => w.toLowerCase()));
@@ -34,7 +38,7 @@ function firstName(c) {
     const ws = words(seg.replace(/^\s*(dr\.?|coach|mr\.?|mrs\.?|ms\.?)\s+/i, ""));
     const [f, l] = ws;
     if (!f || !l) continue;
-    const nameLike = w => /^[A-Z][a-z'’-]+$/.test(w) && !NOT_NAMES.has(w.toLowerCase());
+    const nameLike = (w: string) => /^[A-Z][a-z'’-]+$/.test(w) && !NOT_NAMES.has(w.toLowerCase());
     if (nameLike(f) && (nameLike(l) || /^[A-Z][a-z]*[A-Z][a-z]+$/.test(l))) return f;
   }
   // 3. "I'm Sarah" / "My name is Sarah" in the description.
@@ -44,7 +48,7 @@ function firstName(c) {
 }
 
 // Video title without hashtags, emojis, "| Channel name" tails; cut at ~80 chars on a word.
-function cleanTitle(t, channelName) {
+function cleanTitle(t: string | undefined, channelName: string | undefined): string {
   let s = (t || "").replace(/#[\w-]+/g, "").replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu, "");
   const ch = (channelName || "").split(/[|:–-]/)[0].trim();
   s = s.split(/\s[|]\s/).filter(p => !ch || p.trim().toLowerCase() !== ch.toLowerCase()).join(" | ");
@@ -57,21 +61,21 @@ function cleanTitle(t, channelName) {
 }
 
 // Treated as a podcast only when the channel calls itself one, so the wording matches.
-const isPodcast = c => /podcast|\bshow\b|radio/i.test(c.channel_name || "") || /^\s*(ep\.?|episode)\s*#?\d/i.test(c.latest_video_title || "");
+const isPodcast = (c: LeadLike) => /podcast|\bshow\b|radio/i.test(c.channel_name || "") || /^\s*(ep\.?|episode)\s*#?\d/i.test(c.latest_video_title || "");
 
-function personalLine(c, title) {
+function personalLine(c: LeadLike, title: string) {
   const podcast = isPodcast(c);
   if (title) return podcast ? `I listened to your recent episode "${title}"` : `I watched your recent video "${title}"`;
   return `I came across ${c.channel_name} on YouTube`;
 }
 
-const COUNTRY = { US: "United States", GB: "United Kingdom", CA: "Canada", AU: "Australia", NZ: "New Zealand",
+const COUNTRY: Record<string, string> = { US: "United States", GB: "United Kingdom", CA: "Canada", AU: "Australia", NZ: "New Zealand",
   IE: "Ireland", NO: "Norway", NL: "Netherlands", DE: "Germany", SG: "Singapore", AE: "UAE" };
 
-function fields(c) {
+function fields(c: LeadLike): PersonalFields {
   const first = firstName(c);
   const title = cleanTitle(c.latest_video_title, c.channel_name);
-  const subs = parseInt(c.subscribers, 10) || 0;
+  const subs = parseInt(c.subscribers || "", 10) || 0;
   return {
     email: (c.best_email || "").trim(),
     first_name: first,
@@ -81,7 +85,7 @@ function fields(c) {
     personal_line: personalLine(c, title),
     content_kind: isPodcast(c) ? "podcast" : "YouTube channel",
     subscribers: subs >= 1000 ? (subs >= 1e6 ? (subs / 1e6).toFixed(1).replace(/\.0$/, "") + "M" : Math.round(subs / 100) / 10 + "K") : String(subs || ""),
-    country: COUNTRY[c.country] || c.country || "",
+    country: COUNTRY[c.country || ""] || c.country || "",
     fit_score: String(c.fit_score || ""),
     youtube_link: c.channel_link || "",
     website: c.website || "",
@@ -90,22 +94,24 @@ function fields(c) {
 }
 
 // Fills {{field}} or {{field|fallback}} in your copy with this lead's values.
-function render(template, f) {
-  return String(template || "").replace(/\{\{\s*([a-z_]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}/gi, (m, key, fallback) => {
+function render(template: string | undefined, fields: object): string {
+  const f = fields as Record<string, unknown>;
+  return String(template || "").replace(/\{\{\s*([a-z_]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}/gi, (_m, key: string, fallback?: string) => {
     const v = f[key.toLowerCase()];
     return v != null && v !== "" ? String(v) : (fallback ?? "");
   });
 }
 // Fields used in a template that are empty for this lead (so the preview can warn).
-function missing(template, f) {
-  const out = new Set();
-  String(template || "").replace(/\{\{\s*([a-z_]+)\s*(\|[^}]*)?\}\}/gi, (m, key, fb) => {
+function missing(template: string | undefined, fields: object): string[] {
+  const f = fields as Record<string, unknown>;
+  const out = new Set<string>();
+  String(template || "").replace(/\{\{\s*([a-z_]+)\s*(\|[^}]*)?\}\}/gi, (m, key: string, fb?: string) => {
     if (!fb && (f[key.toLowerCase()] == null || f[key.toLowerCase()] === "")) out.add(key);
     return m;
   });
   return [...out];
 }
-const FIELD_LIST = [
+const FIELD_LIST: [string, string][] = [
   ["greeting_name", "First name, or \"there\""],
   ["first_name", "First name (empty if unsure)"],
   ["personal_line", "I watched your recent video \"…\""],

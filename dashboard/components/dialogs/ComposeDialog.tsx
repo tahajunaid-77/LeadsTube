@@ -3,9 +3,11 @@ import { useEffect, useState } from "react";
 import { Button, Field, Modal, Spinner } from "@/components/ui";
 import { api, smartleadRow } from "@/lib/client";
 import { render as fill } from "@/lib/personalize";
+import type { Shared } from "@/lib/types";
 
 // One-off email from Gmail: your copy filled in for this lead, editable.
-export default function ComposeDialog({ link, onClose, byLink, mail, copy, toast, loadMail, setContacted }) {
+export default function ComposeDialog({ link, onClose, byLink, mail, copy, toast, loadMail, setContacted }:
+  Shared & { link: string | null; onClose: () => void }) {
   const c = link ? byLink.get(link) : null;
   const draft = link ? mail.drafts[link] : null;
   const sent = draft?.status === "sent";
@@ -18,7 +20,7 @@ export default function ComposeDialog({ link, onClose, byLink, mail, copy, toast
     setTo(draft?.to || c.best_email || "");
     setSubject(draft?.subject ?? fill(copy.subject, f));
     setBody(draft?.body ?? fill(copy.body, f));
-    setMsg(sent ? `Sent ${new Date(draft.sent).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`
+    setMsg(sent ? `Sent ${new Date(draft?.sent || "").toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`
       : !copy.body ? "Tip: write your email once on the Email page and it fills in here." : `${mail.sentToday} of ${mail.limit} sent today`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [link]);
@@ -26,7 +28,7 @@ export default function ComposeDialog({ link, onClose, byLink, mail, copy, toast
   async function saveDraft() {
     setBusy(true);
     try { await api("/api/email/save", { link, to, subject, body }); await loadMail(); toast("Draft saved"); onClose(); }
-    catch (e) { setMsg(e.message); }
+    catch (e) { setMsg((e as Error).message); }
     setBusy(false);
   }
   async function discard() {
@@ -40,9 +42,9 @@ export default function ComposeDialog({ link, onClose, byLink, mail, copy, toast
     setBusy(true); setMsg("Sending…");
     try {
       await api("/api/email/send", { link, to: to.trim(), subject: subject.trim(), body: body.trim() });
-      await setContacted([link], true); await loadMail();
+      if (link) await setContacted([link], true); await loadMail();
       toast(`Sent to ${to}`); onClose();
-    } catch (e) { setMsg(e.message); }
+    } catch (e) { setMsg((e as Error).message); }
     setBusy(false);
   }
 

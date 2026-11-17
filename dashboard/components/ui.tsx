@@ -1,9 +1,12 @@
 "use client";
 // Small building blocks used across the dashboard.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import Icon from "@/components/Icon";
 
-export function Button({ icon, children, variant = "", size = "", className = "", ...props }) {
+type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
+  icon?: string; children?: ReactNode; variant?: string; size?: string;
+};
+export function Button({ icon, children, variant = "", size = "", className = "", ...props }: ButtonProps) {
   return (
     <button type="button" className={`btn ${variant} ${size} ${className}`} {...props}>
       {icon && <Icon name={icon} size="sm" />}
@@ -15,12 +18,16 @@ export function Button({ icon, children, variant = "", size = "", className = ""
 export function Spinner() { return <span className="spinner" aria-hidden="true" />; }
 
 // Dropdown menu: closes when you click outside it or press Escape.
-export function Menu({ label, icon, align = "left", open, onOpenChange, children, badge, className = "" }) {
-  const ref = useRef(null);
+interface MenuProps {
+  label: ReactNode; icon?: string; align?: "left" | "right"; open: boolean; onOpenChange: (open: boolean) => void;
+  children: ReactNode; badge?: ReactNode; className?: string;
+}
+export function Menu({ label, icon, align = "left", open, onOpenChange, children, badge, className = "" }: MenuProps) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) onOpenChange(false); };
-    const onKey = e => { if (e.key === "Escape") onOpenChange(false); };
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onOpenChange(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onOpenChange(false); };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
@@ -37,7 +44,8 @@ export function Menu({ label, icon, align = "left", open, onOpenChange, children
   );
 }
 
-export function MenuItem({ icon, title, hint, onClick, disabled }) {
+export function MenuItem({ icon, title, hint, onClick, disabled }:
+  { icon?: string; title: ReactNode; hint?: ReactNode; onClick?: () => void; disabled?: boolean }) {
   return (
     <button type="button" className="menu-item" onClick={onClick} disabled={disabled}>
       {icon && <Icon name={icon} size="sm" />}
@@ -47,8 +55,12 @@ export function MenuItem({ icon, title, hint, onClick, disabled }) {
 }
 
 // Modal built on the native <dialog> element (focus trap, Escape, backdrop).
-export function Modal({ open, onClose, title, subtitle, children, footer, wide }) {
-  const ref = useRef(null);
+interface ModalProps {
+  open: boolean; onClose: () => void; title: ReactNode; subtitle?: ReactNode;
+  children?: ReactNode; footer?: ReactNode; wide?: boolean;
+}
+export function Modal({ open, onClose, title, subtitle, children, footer, wide }: ModalProps) {
+  const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current; if (!d) return;
     if (open && !d.open) d.showModal();
@@ -71,7 +83,8 @@ export function Modal({ open, onClose, title, subtitle, children, footer, wide }
   );
 }
 
-export function Field({ label, hint, children, className = "" }) {
+export function Field({ label, hint, children, className = "" }:
+  { label: ReactNode; hint?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <label className={`field ${className}`}>
       <span className="field-label">{label}{hint && <span className="none"> {hint}</span>}</span>
@@ -80,6 +93,6 @@ export function Field({ label, hint, children, className = "" }) {
   );
 }
 
-export function Pill({ on, bad, children }) {
+export function Pill({ on, bad, children }: { on?: boolean; bad?: boolean; children: ReactNode }) {
   return <span className={`pill ${on ? "on" : ""} ${bad ? "bad" : ""}`}>{children}</span>;
 }

@@ -4,13 +4,16 @@ import { Button, Field, Modal, Spinner } from "@/components/ui";
 import { api, smartleadRow, useStored } from "@/lib/client";
 import { render as fill } from "@/lib/personalize";
 import { useCampaigns } from "@/components/settings/SettingsView";
+import type { Lead, Shared } from "@/lib/types";
 
-const toHtml = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])).replace(/\n/g, "<br>");
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+const toHtml = (t: string) => String(t).replace(/[&<>"]/g, c => ESCAPES[c] ?? c).replace(/\n/g, "<br>");
 
 // leads: the leads to send (your selection, or the current view). null = closed.
-export default function SmartleadDialog({ leads, onClose, data, mail, copy, toast, loadData }) {
+export default function SmartleadDialog({ leads, onClose, data, mail, copy, toast, loadData }:
+  Shared & { leads: Lead[] | null; onClose: () => void }) {
   const open = !!leads;
-  const [campaignId, setCampaignId] = useStored("leads.slCampaign", "");
+  const [campaignId, setCampaignId] = useStored<string>("leads.slCampaign", "");
   const [campaigns, loadCampaigns] = useCampaigns();
   const [skipContacted, setSkipContacted] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -37,11 +40,11 @@ export default function SmartleadDialog({ leads, onClose, data, mail, copy, toas
         return { link: c.channel_link, ...r,
           ...(copy.body ? { email_subject: fill(copy.subject, r), email_body: toHtml(fill(copy.body, r)) } : {}) };
       });
-      const r = await api("/api/smartlead/push", { campaign_id: Number(campaign.id), campaign_name: campaign.name, leads: payload });
+      const r = await api<{ added: number; skipped: number }>("/api/smartlead/push", { campaign_id: Number(campaign.id), campaign_name: campaign.name, leads: payload });
       toast(`Added ${r.added} to "${campaign.name}"${r.skipped ? `, ${r.skipped} skipped by Smartlead` : ""}`);
       onClose();
       await loadData();
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError((e as Error).message); }
     setBusy(false);
   }
 
@@ -70,7 +73,7 @@ export default function SmartleadDialog({ leads, onClose, data, mail, copy, toas
         <div className="sl-preview">
           <h4>First lead</h4>
           <div className="mini-mail">
-            <b>{first.best_email}</b>
+            <b>{first?.best_email}</b>
             {copy.body ? <><i>{fill(copy.subject, firstRow)}</i><p className="pre">{fill(copy.body, firstRow)}</p></>
               : <p>Hi {firstRow.greeting_name}, {firstRow.personal_line}…</p>}
           </div>

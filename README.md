@@ -165,7 +165,7 @@ LeadsTube/
 ├── ICP.md                   who you're looking for
 ├── .env.example             template for your API keys
 ├── finder/                  the search tool (Python)
-├── dashboard/               the dashboard (Next.js + React)
+├── dashboard/               the dashboard (Next.js + React, TypeScript)
 ├── results/                 your leads as CSV files (created on first search)
 └── data/                    the tool's memory and settings (created automatically)
 ```
@@ -187,11 +187,14 @@ LeadsTube/
 | `mailer.py` | Gmail sending |
 | `settings.py` | Folder paths and `.env` |
 
+**Dashboard (`dashboard/`):** written in TypeScript (strict). `app/` holds the page and the API routes, `components/` the screens, `lib/` the server logic (`backend.ts`), browser helpers (`client.ts`), email personalization (`personalize.ts`) and the shared data types (`types.ts`).
+
 **Result files (`results/`):** `Search 01.csv`, `Search 02.csv`, ... (one per search), `all_channels.csv` (every lead), `excluded_channels.csv` (removed as inactive or off-niche; never found again), `run_history.csv`.
 
 **Commands** (run from the project folder; the dashboard does these for you):
 ```bash
 npm run dev                                                # dashboard with live reload
+npm --prefix dashboard run typecheck                       # check the dashboard code for type errors
 .venv/bin/python finder/youtube_finder.py                  # a search from the terminal
 .venv/bin/python finder/youtube_finder.py --fill-missing   # look up missing emails & profiles (no YouTube quota)
 .venv/bin/python finder/youtube_finder.py --clean          # remove inactive / off-niche leads

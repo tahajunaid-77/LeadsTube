@@ -10,42 +10,43 @@ import SettingsView from "@/components/settings/SettingsView";
 import FindLeadsDialog from "@/components/dialogs/FindLeadsDialog";
 import SmartleadDialog from "@/components/dialogs/SmartleadDialog";
 import ComposeDialog from "@/components/dialogs/ComposeDialog";
+import type { Copy, DashboardData, DataPayload, Job, Lead, Limits, MailState, RatingValue, SettingsTab, Shared, View } from "@/lib/types";
 
-const EMPTY_MAIL = { drafts: {}, optOut: [], smartlead: {}, sentToday: 0, limit: 30, ready: { sending: false, smartlead: false } };
+const EMPTY_MAIL: MailState = { drafts: {}, optOut: [], smartlead: {}, sentToday: 0, limit: 30, ready: { sending: false, smartlead: false } };
 
 export default function Dashboard() {
-  const [view, setView] = useStored("leads.view", "leads");
-  const [theme, setTheme] = useStored("leads.theme", "");
-  const [data, setData] = useState({ channels: [], runs: [], contacted: {}, ratings: {}, learning: null, updated: null, loaded: false, error: "" });
+  const [view, setView] = useStored<View>("leads.view", "leads");
+  const [theme, setTheme] = useStored<"" | "light" | "dark">("leads.theme", "");
+  const [data, setData] = useState<DashboardData>({ channels: [], runs: [], contacted: {}, ratings: {}, learning: null, updated: null, loaded: false, error: "" });
   const [mail, setMail] = useState(EMPTY_MAIL);
-  const [copy, setCopy] = useState({ subject: "", body: "" });
-  const [limits, setLimits] = useState(null);
-  const [job, setJob] = useState(null);
+  const [copy, setCopy] = useState<Copy>({ subject: "", body: "" });
+  const [limits, setLimits] = useState<Limits | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
   const [toastMsg, setToastMsg] = useState("");
   const [runOpen, setRunOpen] = useState(false);
-  const [smartleadLeads, setSmartleadLeads] = useState(null);   // leads to send, or null when closed
-  const [composeLink, setComposeLink] = useState(null);
-  const [settingsTab, setSettingsTab] = useStored("leads.settingsTab", "smartlead");
-  const toastTimer = useRef(null);
+  const [smartleadLeads, setSmartleadLeads] = useState<Lead[] | null>(null);   // leads to send, or null when closed
+  const [composeLink, setComposeLink] = useState<string | null>(null);
+  const [settingsTab, setSettingsTab] = useStored<SettingsTab>("leads.settingsTab", "smartlead");
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const toast = useCallback(msg => {
+  const toast = useCallback((msg: string) => {
     setToastMsg(msg);
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMsg(""), 2200);
   }, []);
 
   // ---- loading
-  const loadMail = useCallback(async () => { setMail(await api("/api/email/state").catch(() => EMPTY_MAIL)); }, []);
-  const loadCopy = useCallback(async () => { setCopy(await api("/api/copy").catch(() => ({ subject: "", body: "" }))); }, []);
+  const loadMail = useCallback(async () => { setMail(await api<MailState>("/api/email/state").catch(() => EMPTY_MAIL)); }, []);
+  const loadCopy = useCallback(async () => { setCopy(await api<Copy>("/api/copy").catch(() => ({ subject: "", body: "" }))); }, []);
   const loadData = useCallback(async () => {
     try {
-      const d = await api("/api/data");
+      const d = await api<DataPayload>("/api/data");
       setData({ ...d, channels: d.channels.map(prepareChannel), loaded: true, error: "" });
-    } catch (e) { setData(prev => ({ ...prev, loaded: true, error: e.message })); }
+    } catch (e) { setData(prev => ({ ...prev, loaded: true, error: (e as Error).message })); }
     await loadMail();
   }, [loadMail]);
-  const loadLimits = useCallback(async refresh => {
-    const l = await api("/api/limits" + (refresh ? "?refresh=1" : "")).catch(() => null);
+  const loadLimits = useCallback(async (refresh?: boolean) => {
+    const l = await api<Limits>("/api/limits" + (refresh ? "?refresh=1" : "")).catch(() => null);
     if (l) setLimits(l);
   }, []);
 
@@ -55,7 +56,7 @@ export default function Dashboard() {
   // ---- searches started from the dashboard (or Terminal): poll while running
   const wasRunning = useRef(false);
   const pollJob = useCallback(async () => {
-    const j = await api("/api/run").catch(() => null);
+    const j = await api<Job>("/api/run").catch(() => null);
     if (!j) return;
     setJob(j);
     if (wasRunning.current && !j.running) {
@@ -78,7 +79,7 @@ export default function Dashboard() {
   }, [theme]);
 
   // ---- contacted (one or many leads)
-  const setContacted = useCallback(async (links, value) => {
+  const setContacted = useCallback(async (links: string[], value: boolean) => {
     setData(prev => {
       const contacted = { ...prev.contacted };
       const today = new Date().toISOString().slice(0, 10);
@@ -90,8 +91,8 @@ export default function Dashboard() {
   }, [toast]);
 
   // ---- your ratings (Good / Medium / Low): saved, then the tool re-learns and re-scores
-  const relearnTimer = useRef(null);
-  const setRating = useCallback(async (links, rating) => {
+  const relearnTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const setRating = useCallback(async (links: string[], rating: RatingValue | null) => {
     setData(prev => {
       const ratings = { ...prev.ratings };
       const date = new Date().toISOString().slice(0, 10);
@@ -104,12 +105,12 @@ export default function Dashboard() {
     relearnTimer.current = setTimeout(() => loadData(), 7000);   // fit scores update after re-learning
   }, [toast, loadData]);
 
-  const openSettings = useCallback(tab => { if (tab) setSettingsTab(tab); setView("settings"); }, [setSettingsTab, setView]);
+  const openSettings = useCallback((tab?: SettingsTab) => { if (tab) setSettingsTab(tab); setView("settings"); }, [setSettingsTab, setView]);
   const byLink = useMemo(() => new Map(data.channels.map(c => [c.channel_link, c])), [data.channels]);
 
-  const shared = { data, mail, copy, toast, loadData, loadMail, setCopy, setContacted, setRating, openSettings, byLink };
-  const pages = { leads: true, email: true, runs: true, settings: true };
-  const page = pages[view] ? view : "leads";
+  const shared: Shared = { data, mail, copy, toast, loadData, loadMail, setCopy, setContacted, setRating, openSettings, byLink };
+  const pages: View[] = ["leads", "email", "runs", "settings"];
+  const page: View = pages.includes(view) ? view : "leads";
 
   return (
     <div className="app">
@@ -118,7 +119,7 @@ export default function Dashboard() {
       <main className="main">
         {page === "leads" && <LeadsView {...shared} job={job}
           onFindLeads={() => setRunOpen(true)}
-          onSmartlead={leads => mail.ready.smartlead ? setSmartleadLeads(leads) : (openSettings("smartlead"), toast("Add your Smartlead API key first"))}
+          onSmartlead={(leads: Lead[]) => mail.ready.smartlead ? setSmartleadLeads(leads) : (openSettings("smartlead"), toast("Add your Smartlead API key first"))}
           onCompose={setComposeLink} />}
         {page === "email" && <EmailView {...shared} />}
         {page === "runs" && <RunsView runs={data.runs} />}

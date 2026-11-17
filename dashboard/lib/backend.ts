@@ -6,6 +6,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import type { Body } from "@/lib/route";
+import type { Campaign, Copy, CsvLead, DataPayload, Draft, FitGoal, IcpPayload, Job, LearningStatus, Limits, MailState,
+  PublicSettings, RatingValue, Ratings, RunRequest, RunRow, SmartleadRecord } from "@/lib/types";
 
 // The dashboard folder sits inside the tool's folder.
 export const ROOT = path.resolve(process.cwd(), "..");
@@ -30,20 +33,28 @@ const LEARNER = path.join(FINDER, "learning.py");
 const SMARTLEAD_API = process.env.SMARTLEAD_API_BASE || "https://server.smartlead.ai/api/v1"; // override only for testing
 
 // Survives Next.js hot reloads in development.
-const G = globalThis.__leadtube ??= {
+interface ServerState {
+  job: Job;
+  serperCache: { at: number; value: number | null };
+  writeChain: Promise<unknown>;
+  relearn?: { timer: ReturnType<typeof setTimeout> | undefined; running: boolean; again: boolean };
+}
+const globalStore = globalThis as typeof globalThis & { __leadtube?: ServerState };
+const G: ServerState = globalStore.__leadtube ??= {
   job: { running: false, mode: "", started: null, finished: null, code: null, log: "" },
   serperCache: { at: 0, value: null },
   writeChain: Promise.resolve(),
 };
 
 export class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
 // ---------------------------------------------------------------- .env (API keys)
 
-export async function readEnv() {
-  const out = {};
+export async function readEnv(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
   const text = await fsp.readFile(ENV_FILE, "utf8").catch(() => "");
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -54,7 +65,7 @@ export async function readEnv() {
   return out;
 }
 // Change one key, keeping the rest of the file (comments included).
-async function setEnv(key, value) {
+async function setEnv(key: string, value: string) {
   const clean = String(value).replace(/[\r\n]/g, "").trim();
   G.writeChain = G.writeChain.then(async () => {
     const lines = (await fsp.readFile(ENV_FILE, "utf8").catch(() => "")).split(/\r?\n/);
@@ -67,10 +78,10 @@ async function setEnv(key, value) {
 
 // ---------------------------------------------------------------- files
 
-export function parseCsv(text) {
+export function parseCsv(text: string): Record<string, string>[] {
   text = text.replace(/^﻿/, "");
-  const rows = [];
-  let row = [], field = "", quoted = false;
+  const rows: string[][] = [];
+  let row: string[] = [], field = "", quoted = false;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (quoted) {
@@ -90,43 +101,45 @@ export function parseCsv(text) {
   const [head, ...body] = rows;
   return body.map(r => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
 }
-export async function readCsv(file) {
-  try { return parseCsv(await fsp.readFile(file, "utf8")); }
-  catch (e) { if (e.code === "ENOENT") return []; throw e; }
+export async function readCsv<T = Record<string, string>>(file: string): Promise<T[]> {
+  try { return parseCsv(await fsp.readFile(file, "utf8")) as T[]; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; throw e; }
 }
-export async function readJson(file, fallback) {
+export async function readJson<T>(file: string, fallback: T): Promise<T> {
   try { return JSON.parse(await fsp.readFile(file, "utf8")); } catch { return fallback; }
 }
 // Writes are queued so two requests never overwrite each other.
-export function updateJson(file, fallback, change) {
-  G.writeChain = G.writeChain.then(async () => {
+export function updateJson<T>(file: string, fallback: T, change: (value: T) => T): Promise<T> {
+  const next = G.writeChain.then(async () => {
     const value = change(await readJson(file, fallback));
     await fsp.mkdir(path.dirname(file), { recursive: true });
     await fsp.writeFile(file + ".tmp", JSON.stringify(value, null, 1));
     await fsp.rename(file + ".tmp", file);
     return value;
   });
-  return G.writeChain;
+  G.writeChain = next.catch(() => undefined);
+  return next;
 }
-export async function findLead(link) {
-  return (await readCsv(MASTER)).find(r => r.channel_link === link);
+export async function findLead(link: string) {
+  return (await readCsv<CsvLead>(MASTER)).find(r => r.channel_link === link);
 }
 
 // ---------------------------------------------------------------- leads
 
-export async function getData() {
+export async function getData(): Promise<DataPayload> {
   const [channels, runs, contacted, ratings, learning] = await Promise.all([
-    readCsv(MASTER), readCsv(HISTORY), readJson(CONTACTED, {}), readJson(RATINGS, {}), learningStatus()]);
+    readCsv<CsvLead>(MASTER), readCsv<RunRow>(HISTORY), readJson<Record<string, string>>(CONTACTED, {}),
+    readJson<Ratings>(RATINGS, {}), learningStatus()]);
   const updated = fs.existsSync(MASTER) ? fs.statSync(MASTER).mtime : null;
   return { channels, runs, contacted, ratings, learning, updated };
 }
 
 // ---------------------------------------------------------------- your ratings + learning
 
-const RATING_VALUES = new Set(["good", "medium", "low"]);
-export async function setRatings(links, rating) {
+const RATING_VALUES = new Set<unknown>(["good", "medium", "low"]);
+export async function setRatings(links: string[], rating: RatingValue | null) {
   if (rating !== null && !RATING_VALUES.has(rating)) throw new HttpError(400, "Rating must be good, medium or low.");
-  const state = await updateJson(RATINGS, {}, r => {
+  const state = await updateJson<Ratings>(RATINGS, {}, r => {
     const date = new Date().toISOString().slice(0, 10);
     for (const link of links) { if (rating) r[link] = { rating, date }; else delete r[link]; }
     return r;
@@ -134,28 +147,29 @@ export async function setRatings(links, rating) {
   scheduleRelearn();
   return { ok: true, count: Object.keys(state).length };
 }
-async function learningStatus() {
-  const m = await readJson(MODEL, null);
+async function learningStatus(): Promise<LearningStatus> {
+  const m = await readJson<LearningStatus | null>(MODEL, null);
   if (!m) return { active: false, ratings: 0, counts: { good: 0, medium: 0, low: 0 }, needed: 8, likes: [], dislikes: [] };
   const { active, ratings, counts, needed, likes, dislikes, trained_at } = m;
   return { active, ratings, counts, needed, likes, dislikes, trained_at, relearning: !!G.relearn?.running };
 }
 // Retrain a few seconds after the last rating change, then re-score every lead.
 function scheduleRelearn() {
-  G.relearn ??= { timer: null, running: false, again: false };
+  G.relearn ??= { timer: undefined, running: false, again: false };
   clearTimeout(G.relearn.timer);
   G.relearn.timer = setTimeout(runRelearn, 2500);
 }
 function runRelearn() {
   const st = G.relearn;
+  if (!st) return;
   if (st.running) { st.again = true; return; }
   st.running = true;
   const child = spawn(pythonPath(), [LEARNER, "--rescore"], { cwd: ROOT, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
   child.on("error", () => { st.running = false; });
   child.on("close", () => { st.running = false; if (st.again) { st.again = false; runRelearn(); } });
 }
-export function setContacted(links, value) {
-  return updateJson(CONTACTED, {}, state => {
+export function setContacted(links: string[], value: boolean) {
+  return updateJson<Record<string, string>>(CONTACTED, {}, state => {
     const today = new Date().toISOString().slice(0, 10);
     for (const link of links) { if (value) state[link] = state[link] || today; else delete state[link]; }
     return state;
@@ -173,42 +187,42 @@ async function lockPid() {
   return parseInt((await fsp.readFile(path.join(DATA, "run.lock"), "utf8").catch(() => "")).split(" ")[0], 10) || 0;
 }
 
-export function startJob({ mode, target, countries, days, keywords, fitGoal }) {
+export function startJob({ mode, target, countries, days, keywords, fitGoal }: RunRequest) {
   const job = G.job;
   if (job.running) throw new HttpError(409, "A run is already in progress.");
   const args = ["-u", SCRIPT, "--yes", "--no-open"];
   if (mode === "emails") args.push("--fill-missing");
   else {
-    const t = parseInt(target, 10);
+    const t = parseInt(String(target ?? ""), 10);
     if (t > 0) {
       args.push("--target", String(Math.min(5000, t)));
       // which leads count toward "How many" (lower-fit ones are still saved)
-      if (["top", "good", "possible"].includes(fitGoal)) args.push("--fit-goal", fitGoal);
+      if (fitGoal && (["top", "good", "possible"] as FitGoal[]).includes(fitGoal)) args.push("--fit-goal", fitGoal);
     }
     if (countries && /^[\w ,.'-]{1,200}$/.test(countries)) args.push("--countries", countries);
-    const d = parseInt(days, 10);
+    const d = parseInt(String(days ?? ""), 10);
     if (d >= 7 && d <= 365) args.push("--days", String(d));
     // custom keywords (spintax allowed); one argument, never through a shell
     if (typeof keywords === "string" && keywords.trim() && keywords.length <= 500 && !/[\r\n]/.test(keywords))
       args.push("--keywords", keywords.trim());
   }
-  Object.assign(job, { running: true, mode, started: new Date().toISOString(), finished: null, code: null, log: "" });
+  Object.assign(job, { running: true, mode: mode === "emails" ? "emails" : "search", started: new Date().toISOString(), finished: null, code: null, log: "" });
   // detached: the run keeps going (and saves its results) even if the dashboard restarts
   const child = spawn(pythonPath(), args, { cwd: ROOT, detached: true, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
-  const append = chunk => { job.log = (job.log + chunk.toString()).slice(-LOG_LIMIT); };
+  const append = (chunk: Buffer | string) => { job.log = (job.log + chunk.toString()).slice(-LOG_LIMIT); };
   child.stdout.on("data", append);
   child.stderr.on("data", append);
-  child.on("error", err => { append(`\nCould not start Python: ${err.message}\n`); });
-  child.on("close", code => Object.assign(job, { running: false, finished: new Date().toISOString(), code }));
+  child.on("error", (err: Error) => { append(`\nCould not start Python: ${err.message}\n`); });
+  child.on("close", (code: number | null) => Object.assign(job, { running: false, finished: new Date().toISOString(), code }));
   return { ok: true };
 }
-export async function jobStatus() {
+export async function jobStatus(): Promise<Job> {
   const job = G.job;
   if (!job.running) {
     const pid = await lockPid();
     let alive = false;
     if (pid) { try { process.kill(pid, 0); alive = true; } catch {} }
-    if (alive) return { ...job, running: true, mode: "other",
+    if (alive) return { ...job, running: true, mode: "other" as const,
       log: job.log + "\nAnother run is in progress (started from Terminal or before a restart). Results appear when it finishes.\n" };
   }
   return job;
@@ -227,13 +241,13 @@ const pacificDay = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/L
 function msUntilPacificMidnight() {
   const la = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
   const next = new Date(la); next.setHours(24, 0, 0, 0);
-  return next - la;
+  return next.getTime() - la.getTime();
 }
-async function serperBalance(refresh) {
+async function serperBalance(refresh: boolean): Promise<number | null> {
   const cache = G.serperCache;
   if (!refresh && Date.now() - cache.at < 10 * 60 * 1000) return cache.value;
   const key = (await readEnv()).SERPER_API_KEY;
-  let value = null;
+  let value: number | null = null;
   if (key) {
     try {
       const res = await fetch("https://google.serper.dev/account", { headers: { "X-API-KEY": key }, signal: AbortSignal.timeout(8000) });
@@ -243,9 +257,9 @@ async function serperBalance(refresh) {
   G.serperCache = { at: Date.now(), value };
   return value;
 }
-export async function limits(refresh) {
+export async function limits(refresh: boolean): Promise<Limits> {
   const ytKeys = [...new Set(((await readEnv()).YOUTUBE_API_KEYS || "").split(",").map(k => k.trim()).filter(Boolean))];
-  const usage = (await readJson(path.join(DATA, "key_usage.json"), {}))[pacificDay()] || {};
+  const usage = (await readJson<Record<string, Record<string, number>>>(path.join(DATA, "key_usage.json"), {}))[pacificDay()] || {};
   const keys = ytKeys.map((k, i) => [i ? `Backup ${i}` : "Main", k]).map(([name, k]) => {
     const used = Math.min(DAILY_QUOTA, usage["key ..." + k.slice(-4)] || 0);
     return { name, label: "…" + k.slice(-4), used, left: DAILY_QUOTA - used, quota: DAILY_QUOTA };
@@ -256,26 +270,26 @@ export async function limits(refresh) {
 // ---------------------------------------------------------------- settings (Smartlead + Gmail)
 
 // Secrets live in .env; everything else in data/settings.json.
-const SECRETS = { app_password: "GMAIL_APP_PASSWORD", smartlead_api_key: "SMARTLEAD_API_KEY" };
+const SECRETS: Record<string, string> = { app_password: "GMAIL_APP_PASSWORD", smartlead_api_key: "SMARTLEAD_API_KEY" };
 const PLAIN_FIELDS = ["from_name", "from_email", "smtp_host", "smtp_port", "daily_limit"];
-const SETTING_DEFAULTS = { smtp_host: "smtp.gmail.com", smtp_port: 465, daily_limit: 30 };
+const SETTING_DEFAULTS: Record<string, string | number> = { smtp_host: "smtp.gmail.com", smtp_port: 465, daily_limit: 30 };
 
-async function readSettings() {
-  const [plain, envVars] = await Promise.all([readJson(SETTINGS_FILE, {}), readEnv()]);
-  const s = { ...SETTING_DEFAULTS, ...plain };
+async function readSettings(): Promise<Record<string, string | number>> {
+  const [plain, envVars] = await Promise.all([readJson<Record<string, string | number>>(SETTINGS_FILE, {}), readEnv()]);
+  const s: Record<string, string | number> = { ...SETTING_DEFAULTS, ...plain };
   for (const [field, key] of Object.entries(SECRETS)) s[field] = envVars[key] || "";
   return s;
 }
 // Settings go to the browser with secrets hidden (only whether they are set).
-export async function publicSettings() {
+export async function publicSettings(): Promise<PublicSettings> {
   const s = await readSettings();
-  const out = {};
+  const out: Record<string, string | number | boolean> = {};
   for (const k of PLAIN_FIELDS) out[k] = s[k] ?? "";
   for (const k of Object.keys(SECRETS)) { out[k] = ""; out[k + "_set"] = !!s[k]; }
-  return out;
+  return out as unknown as PublicSettings;
 }
-export async function saveSettings(body) {
-  await updateJson(SETTINGS_FILE, {}, s => {
+export async function saveSettings(body: Body) {
+  await updateJson<Record<string, string | number>>(SETTINGS_FILE, {}, s => {
     for (const k of PLAIN_FIELDS) {
       if (!(k in body)) continue;
       s[k] = k === "smtp_port" || k === "daily_limit"
@@ -291,56 +305,58 @@ export async function saveSettings(body) {
 
 // ---------------------------------------------------------------- email copy + Gmail (mailer.py)
 
-export async function getCopy() { return readJson(COPY_FILE, { subject: "", body: "" }); }
-export async function saveCopy({ subject, body }) {
-  const copy = { subject: String(subject ?? "").slice(0, 300), body: String(body ?? "").slice(0, 10000), updated: new Date().toISOString() };
-  return updateJson(COPY_FILE, {}, () => copy);
+export async function getCopy(): Promise<Copy> { return readJson<Copy>(COPY_FILE, { subject: "", body: "" }); }
+export async function saveCopy({ subject, body }: Body) {
+  const copy: Copy = { subject: String(subject ?? "").slice(0, 300), body: String(body ?? "").slice(0, 10000), updated: new Date().toISOString() };
+  return updateJson<Copy>(COPY_FILE, { subject: "", body: "" }, () => copy);
 }
 
-export function runMailer(command, payload, timeoutMs = 120_000) {
+type MailerReply = { error?: string; [key: string]: any };
+export function runMailer(command: "send" | "test", payload: unknown, timeoutMs = 120_000): Promise<MailerReply> {
   return new Promise(resolve => {
     const child = spawn(pythonPath(), [MAILER, command], { cwd: ROOT, env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
     let out = "", err = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.stdout.on("data", c => { out += c; });
-    child.stderr.on("data", c => { err += c; });
-    child.on("error", e => { clearTimeout(timer); resolve({ error: `Could not start Python: ${e.message}` }); });
+    child.stdout.on("data", (c: Buffer) => { out += c; });
+    child.stderr.on("data", (c: Buffer) => { err += c; });
+    child.on("error", (e: Error) => { clearTimeout(timer); resolve({ error: `Could not start Python: ${e.message}` }); });
     child.on("close", () => {
       clearTimeout(timer);
-      try { resolve(JSON.parse(out.trim().split("\n").pop())); }
+      try { resolve(JSON.parse(out.trim().split("\n").pop() || "")); }
       catch { resolve({ error: (err.trim().split("\n").pop() || "The email helper stopped unexpectedly.").slice(0, 300) }); }
     });
     child.stdin.end(JSON.stringify(payload));
   });
 }
 
-export async function emailState() {
+export async function emailState(): Promise<MailState> {
   const [drafts, optOut, log, settings, smartleadSent] = await Promise.all([
-    readJson(DRAFTS, {}), readJson(OPT_OUT, []), readJson(SEND_LOG, []), readSettings(), readJson(SMARTLEAD_SENT, {})]);
+    readJson<Record<string, Draft>>(DRAFTS, {}), readJson<string[]>(OPT_OUT, []), readJson<{ date?: string }[]>(SEND_LOG, []),
+    readSettings(), readJson<Record<string, SmartleadRecord>>(SMARTLEAD_SENT, {})]);
   const today = new Date().toLocaleDateString("en-CA");
   return {
     drafts, optOut, smartlead: smartleadSent,
     sentToday: log.filter(e => (e.date || "").startsWith(today)).length,
-    limit: settings.daily_limit || 30,
+    limit: Number(settings.daily_limit) || 30,
     ready: { sending: !!settings.from_email && !!settings.app_password, smartlead: !!settings.smartlead_api_key },
   };
 }
-export async function saveDraft({ link, to, subject, body }) {
+export async function saveDraft({ link, to, subject, body }: Body) {
   if (!(await findLead(link))) throw new HttpError(404, "Channel not found.");
-  await updateJson(DRAFTS, {}, d => ({ ...d, [link]: { ...(d[link] || {}), to: String(to || ""), subject: String(subject || ""),
+  await updateJson<Record<string, Draft>>(DRAFTS, {}, d => ({ ...d, [link]: { ...(d[link] || {}), to: String(to || ""), subject: String(subject || ""),
     body: String(body || ""), status: d[link]?.status === "sent" ? "sent" : "draft", updated: new Date().toISOString() } }));
   return { ok: true };
 }
-export async function discardDraft({ link }) {
-  await updateJson(DRAFTS, {}, d => { if (d[link]?.status !== "sent") delete d[link]; return d; });
+export async function discardDraft({ link }: Body) {
+  await updateJson<Record<string, Draft>>(DRAFTS, {}, d => { if (d[link]?.status !== "sent") delete d[link]; return d; });
   return { ok: true };
 }
-export async function sendEmail({ link, to, subject, body }) {
+export async function sendEmail({ link, to, subject, body }: Body) {
   if (!(await findLead(link))) throw new HttpError(404, "Channel not found.");
-  if ((await readJson(DRAFTS, {}))[link]?.status === "sent") throw new HttpError(409, "Already emailed this channel.");
+  if ((await readJson<Record<string, Draft>>(DRAFTS, {}))[link]?.status === "sent") throw new HttpError(409, "Already emailed this channel.");
   const r = await runMailer("send", { link, to, subject, body }, 90_000);
   if (r.error) throw new HttpError(400, r.error);
-  await updateJson(DRAFTS, {}, d => ({ ...d, [link]: { to, subject, body, status: "sent", sent: new Date().toISOString() } }));
+  await updateJson<Record<string, Draft>>(DRAFTS, {}, d => ({ ...d, [link]: { to, subject, body, status: "sent", sent: new Date().toISOString() } }));
   await setContacted([link], true);
   return r;
 }
@@ -352,7 +368,7 @@ export async function testEmailLogin() {
 
 // ---------------------------------------------------------------- Smartlead
 
-async function smartlead(pathname, options = {}) {
+async function smartlead(pathname: string, options: RequestInit = {}): Promise<any> {
   const key = (await readEnv()).SMARTLEAD_API_KEY;
   if (!key) throw new HttpError(400, "Add your Smartlead API key in Settings first.");
   const url = `${SMARTLEAD_API}${pathname}${pathname.includes("?") ? "&" : "?"}api_key=${encodeURIComponent(key)}`;
@@ -360,14 +376,14 @@ async function smartlead(pathname, options = {}) {
   try { res = await fetch(url, { ...options, headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(60_000) }); }
   catch { throw new HttpError(502, "Couldn't reach Smartlead. Check your internet connection."); }
   const text = await res.text();
-  let data; try { data = JSON.parse(text); } catch { data = { message: text.slice(0, 200) }; }
+  let data: any; try { data = JSON.parse(text); } catch { data = { message: text.slice(0, 200) }; }
   if (!res.ok) throw new HttpError(502, res.status === 401 || res.status === 403
     ? "Smartlead rejected the API key. Check it in Settings."
     : `Smartlead error (${res.status}): ${data.message || data.error || "unknown"}`);
   return data;
 }
-const clip = (v, n = 500) => String(v ?? "").slice(0, n);
-function smartleadLead(l) {
+const clip = (v: unknown, n = 500) => String(v ?? "").slice(0, n);
+function smartleadLead(l: Body) {
   return {
     email: clip(l.email, 200), first_name: clip(l.first_name, 100), company_name: clip(l.channel_name, 200),
     website: clip(l.website), linkedin_profile: clip(l.linkedin), location: clip(l.country, 100),
@@ -382,17 +398,17 @@ function smartleadLead(l) {
 }
 export async function smartleadCampaigns() {
   const list = await smartlead("/campaigns/");
-  const campaigns = (Array.isArray(list) ? list : list.data || []).map(c => ({ id: c.id, name: c.name, status: c.status }))
-    .filter(c => c.id && !/ARCHIVED|STOPPED|COMPLETED/i.test(c.status || ""));
+  const campaigns = (Array.isArray(list) ? list : list.data || []).map((c: Campaign): Campaign => ({ id: c.id, name: c.name, status: c.status }))
+    .filter((c: Campaign) => c.id && !/ARCHIVED|STOPPED|COMPLETED/i.test(c.status || ""));
   return { campaigns };
 }
-export async function smartleadPush({ campaign_id, campaign_name, leads }) {
+export async function smartleadPush({ campaign_id, campaign_name, leads }: Body) {
   if (!/^\d+$/.test(String(campaign_id))) throw new HttpError(400, "Pick a campaign.");
   if (!Array.isArray(leads) || !leads.length) throw new HttpError(400, "No leads to add.");
-  const optOut = new Set((await readJson(OPT_OUT, [])).map(e => e.toLowerCase()));
-  const already = await readJson(SMARTLEAD_SENT, {});
-  const known = new Set((await readCsv(MASTER)).map(r => r.channel_link));
-  const todo = leads.filter(l => known.has(l.link) && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(l.email || "")
+  const optOut = new Set((await readJson<string[]>(OPT_OUT, [])).map(e => e.toLowerCase()));
+  const already = await readJson<Record<string, SmartleadRecord>>(SMARTLEAD_SENT, {});
+  const known = new Set((await readCsv<CsvLead>(MASTER)).map(r => r.channel_link));
+  const todo = (leads as Body[]).filter(l => known.has(l.link) && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(l.email || "")
     && !optOut.has(l.email.toLowerCase()) && !already[l.link]);
   if (!todo.length) throw new HttpError(400, "All these leads were already added, opted out, or have no email.");
   let added = 0, skipped = 0;
@@ -404,7 +420,7 @@ export async function smartleadPush({ campaign_id, campaign_name, leads }) {
     added += r.added_count ?? r.upload_count ?? batch.length;
     skipped += r.skipped_count ?? r.already_added_to_campaign ?? 0;
     const date = new Date().toISOString().slice(0, 10);
-    await updateJson(SMARTLEAD_SENT, {}, d => { for (const l of batch) d[l.link] = { campaign_id: Number(campaign_id),
+    await updateJson<Record<string, SmartleadRecord>>(SMARTLEAD_SENT, {}, d => { for (const l of batch) d[l.link] = { campaign_id: Number(campaign_id),
       campaign: clip(campaign_name, 200), email: l.email, date }; return d; });
     await setContacted(batch.map(l => l.link), true);
   }
@@ -422,15 +438,15 @@ const ICP_SECTIONS = ["ideal lead", "search phrases", "keep a channel only if it
   "not my icp: topics", "not my icp: churches and ministries", "not my icp: media, schools and companies",
   "organisations, not a person", "generic words (never someone's name)", "word swaps for deeper search",
   "useful words in youtube suggestions", "phrases that are not leads"];
-const sectionKey = line => line.replace(/^##\s*/, "").replace(/^\d+\.\s*/, "").trim().toLowerCase();
+const sectionKey = (line: string) => line.replace(/^##\s*/, "").replace(/^\d+\.\s*/, "").trim().toLowerCase();
 
-export async function getIcp() {
+export async function getIcp(): Promise<IcpPayload> {
   const [text, previous] = await Promise.all([fsp.readFile(ICP_FILE, "utf8").catch(() => ""),
     fsp.readFile(ICP_PREVIOUS, "utf8").catch(() => "")]);
   const stat = fs.existsSync(ICP_FILE) ? fs.statSync(ICP_FILE).mtime : null;
   return { text, updated: stat, canUndo: !!previous && previous !== text };
 }
-export async function saveIcp({ text, undo }) {
+export async function saveIcp({ text, undo }: Body) {
   const current = await fsp.readFile(ICP_FILE, "utf8").catch(() => "");
   if (undo) {
     const previous = await fsp.readFile(ICP_PREVIOUS, "utf8").catch(() => "");

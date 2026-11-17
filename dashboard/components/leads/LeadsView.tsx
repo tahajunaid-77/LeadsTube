@@ -7,26 +7,35 @@ import LearningBar from "@/components/leads/LearningBar";
 import { RATINGS } from "@/components/leads/Rating";
 import { COUNTRY, downloadCsv, smartleadRow, today, useStored } from "@/lib/client";
 import { render as fill } from "@/lib/personalize";
+import type { Job, Lead, LeadField, Shared } from "@/lib/types";
+
+type Filters = { q: string; fit: string; country: string; email: string; status: string; match: string; type: string;
+  size: string; social: "" | LeadField; rating: string };
+type SortKey = "fit" | "name" | "subs" | "upload";
 
 const PAGE = 100;
-const NO_FILTERS = { q: "", fit: "", country: "", email: "", status: "", match: "", type: "", size: "", social: "", rating: "" };
-const MORE_KEYS = ["rating", "match", "type", "size", "social"];
-const toHtml = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])).replace(/\n/g, "<br>");
+const NO_FILTERS: Filters = { q: "", fit: "", country: "", email: "", status: "", match: "", type: "", size: "", social: "", rating: "" };
+const MORE_KEYS: (keyof Filters)[] = ["rating", "match", "type", "size", "social"];
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+const toHtml = (t: string) => String(t).replace(/[&<>"]/g, c => ESCAPES[c] ?? c).replace(/\n/g, "<br>");
 
-export default function LeadsView({ data, mail, copy, toast, setContacted, setRating, onFindLeads, onSmartlead, onCompose, job }) {
+type LeadsViewProps = Shared & {
+  job: Job | null; onFindLeads: () => void; onSmartlead: (leads: Lead[]) => void; onCompose: (link: string) => void;
+};
+export default function LeadsView({ data, mail, copy, toast, setContacted, setRating, onFindLeads, onSmartlead, onCompose, job }: LeadsViewProps) {
   const { channels, runs, contacted } = data;
   const ratings = data.ratings || {};
-  const [filters, setFilters] = useStored("leads.filters2", NO_FILTERS);
-  const [run, setRun] = useStored("leads.run", "");
-  const [sort, setSort] = useStored("leads.sort", { key: "fit", dir: -1 });
+  const [filters, setFilters] = useStored<Filters>("leads.filters2", NO_FILTERS);
+  const [run, setRun] = useStored<string>("leads.run", "");
+  const [sort, setSort] = useStored<{ key: SortKey; dir: number }>("leads.sort", { key: "fit", dir: -1 });
   const [shown, setShown] = useState(PAGE);
-  const [openRow, setOpenRow] = useState(null);
-  const [selected, setSelected] = useState(() => new Set());
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState("");          // which dropdown is open
-  const f = { ...NO_FILTERS, ...filters };
-  const setF = (k, v) => { setFilters(prev => ({ ...prev, [k]: v })); setShown(PAGE); setOpenRow(null); };
+  const f: Filters = { ...NO_FILTERS, ...filters };
+  const setF = <K extends keyof Filters>(k: K, v: Filters[K]) => { setFilters(prev => ({ ...prev, [k]: v })); setShown(PAGE); setOpenRow(null); };
 
-  const isDone = c => !!contacted[c.channel_link];
+  const isDone = (c: Lead) => !!contacted[c.channel_link];
   const runNames = useMemo(() => [...new Set(runs.map(r => r.run).concat(channels.map(c => c.found_in).filter(Boolean)))]
     .sort((a, b) => b.localeCompare(a, undefined, { numeric: true })), [runs, channels]);
   const countries = useMemo(() => [...new Set(channels.map(c => c.country))].sort(), [channels]);
@@ -57,12 +66,12 @@ export default function LeadsView({ data, mail, copy, toast, setContacted, setRa
       return true;
     });
     const d = sort.dir;
-    const cmp = {
-      fit: (a, b) => d * (a.fit - b.fit) || b.subs - a.subs,
-      name: (a, b) => d * a.channel_name.localeCompare(b.channel_name),
-      subs: (a, b) => d * (a.subs - b.subs),
-      upload: (a, b) => d * (a.last_upload || "").localeCompare(b.last_upload || ""),
-    }[sort.key] || (() => 0);
+    const cmp = ({
+      fit: (a: Lead, b: Lead) => d * (a.fit - b.fit) || b.subs - a.subs,
+      name: (a: Lead, b: Lead) => d * a.channel_name.localeCompare(b.channel_name),
+      subs: (a: Lead, b: Lead) => d * (a.subs - b.subs),
+      upload: (a: Lead, b: Lead) => d * (a.last_upload || "").localeCompare(b.last_upload || ""),
+    } as Record<string, ((a: Lead, b: Lead) => number) | undefined>)[sort.key] || (() => 0);
     return out.sort(cmp);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels, contacted, ratings, mail, run, sort, filters]);
@@ -75,17 +84,17 @@ export default function LeadsView({ data, mail, copy, toast, setContacted, setRa
   const selectedLeads = useMemo(() => channels.filter(c => selected.has(c.channel_link)), [channels, selected]);
   const allInView = list.length > 0 && list.every(c => selected.has(c.channel_link));
   const someInView = list.some(c => selected.has(c.channel_link));
-  const headCheck = useRef(null);
+  const headCheck = useRef<HTMLInputElement>(null);
   useEffect(() => { if (headCheck.current) headCheck.current.indeterminate = someInView && !allInView; }, [someInView, allInView]);
 
-  const toggle = link => setSelected(prev => { const n = new Set(prev); n.has(link) ? n.delete(link) : n.add(link); return n; });
+  const toggle = (link: string) => setSelected(prev => { const n = new Set(prev); n.has(link) ? n.delete(link) : n.add(link); return n; });
   const toggleAll = () => setSelected(prev => {
     const n = new Set(prev);
     if (allInView) list.forEach(c => n.delete(c.channel_link)); else list.forEach(c => n.add(c.channel_link));
     return n;
   });
-  const sortBy = key => setSort(s => s.key === key ? { key, dir: -s.dir } : { key, dir: key === "name" ? 1 : -1 });
-  const arrow = key => sort.key === key ? (sort.dir > 0 ? " ↑" : " ↓") : "";
+  const sortBy = (key: SortKey) => setSort(s => s.key === key ? { key, dir: -s.dir } : { key, dir: key === "name" ? 1 : -1 });
+  const arrow = (key: SortKey) => sort.key === key ? (sort.dir > 0 ? " ↑" : " ↓") : "";
 
   // ---- exports
   const stamp = today();
@@ -104,13 +113,13 @@ export default function LeadsView({ data, mail, copy, toast, setContacted, setRa
     const withCopy = !!copy.body;
     downloadCsv(`Smartlead ${run || "All runs"} ${stamp}.csv`, withCopy ? cols.concat("email_subject", "email_body") : cols,
       rows.map(c => { const r = smartleadRow(c);
-        return cols.map(k => r[k]).concat(withCopy ? [fill(copy.subject, r), toHtml(fill(copy.body, r))] : []); }));
+        return cols.map(k => (r as unknown as Record<string, string>)[k]).concat(withCopy ? [fill(copy.subject, r), toHtml(fill(copy.body, r))] : []); }));
     toast(`${rows.length} leads exported`);
   }
   function exportFull() {
-    const cols = ["channel_name", "channel_link", "country", "subscribers", "last_upload", "best_email", "emails", "email_source",
+    const cols: LeadField[] = ["channel_name", "channel_link", "country", "subscribers", "last_upload", "best_email", "emails", "email_source",
       "website", "linkedin", "facebook", "instagram", "twitter", "tiktok", "podcast", "booking", "found_in"];
-    downloadCsv(`${run || "All runs"} (filtered) ${stamp}.csv`, cols.concat("contacted"),
+    downloadCsv(`${run || "All runs"} (filtered) ${stamp}.csv`, [...cols, "contacted"],
       list.map(c => cols.map(k => c[k]).concat(contacted[c.channel_link] || "")));
   }
   async function copyEmails() {
@@ -180,7 +189,7 @@ export default function LeadsView({ data, mail, copy, toast, setContacted, setRa
             <label>Subscribers<select value={f.size} onChange={e => setF("size", e.target.value)}>
               <option value="">Any size</option><option value="0-1000">Under 1K</option><option value="1000-10000">1K to 10K</option>
               <option value="10000-100000">10K to 100K</option><option value="100000-1e12">100K+</option></select></label>
-            <label>Profiles<select value={f.social} onChange={e => setF("social", e.target.value)}>
+            <label>Profiles<select value={f.social} onChange={e => setF("social", e.target.value as Filters["social"])}>
               <option value="">Any profiles</option><option value="linkedin">Has LinkedIn</option><option value="facebook">Has Facebook</option>
               <option value="instagram">Has Instagram</option><option value="website">Has website</option></select></label>
             <button type="button" className="link-btn" onClick={() => { setFilters(NO_FILTERS); setRun(""); setMenu(""); }}>Reset all filters</button>

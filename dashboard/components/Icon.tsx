@@ -1,6 +1,7 @@
 // One icon set (Lucide-style outline, 24px grid) + filled brand marks for social profiles.
+import type { ReactElement } from "react";
 
-const OUTLINE = {
+const OUTLINE: Record<string, ReactElement> = {
   users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
   mail: <><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" /></>,
   history: <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></>,
@@ -38,7 +39,7 @@ const OUTLINE = {
   booking: <><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></>,
 };
 
-const FILLED = {
+const FILLED: Record<string, ReactElement> = {
   linkedin: <path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5ZM3 9.5h4V21H3V9.5Zm6.5 0h3.8v1.6h.1c.5-1 1.8-2 3.8-2 4 0 4.8 2.6 4.8 6V21h-4v-5.1c0-1.2 0-2.8-1.7-2.8s-2 1.3-2 2.7V21h-4V9.5Z" />,
   facebook: <path d="M14 8.5V6.8c0-.8.2-1.3 1.4-1.3H17V2.3c-.3 0-1.3-.1-2.5-.1-2.5 0-4.2 1.5-4.2 4.3v2H7.6v3.4h2.7V22H14V11.9h2.7l.4-3.4H14Z" />,
   twitter: <path d="M17.8 2.5h3.3l-7.2 8.2 8.5 10.8h-6.6l-5.2-6.6-6 6.6H1.3l7.7-8.8L.9 2.5h6.8l4.7 6 5.4-6Zm-1.2 17h1.8L7 4.4H5.1l11.5 15.1Z" />,
@@ -46,7 +47,9 @@ const FILLED = {
   youtube: <path d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.6 12 4.6 12 4.6s-7 0-8.9.5A3 3 0 0 0 1 7.2 31 31 0 0 0 .5 12a31 31 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 8.9.5 8.9.5s7 0 8.9-.5a3 3 0 0 0 2.1-2.1 31 31 0 0 0 .5-4.8 31 31 0 0 0-.5-4.8ZM9.8 15V9l5.7 3-5.7 3Z" />,
 };
 
-export default function Icon({ name, size = "md", className = "" }) {
+export type IconSize = "xs" | "sm" | "md" | "lg";
+
+export default function Icon({ name, size = "md", className = "" }: { name: string; size?: IconSize; className?: string }) {
   const filled = FILLED[name];
   return (
     <svg className={`i ${size} ${filled ? "filled" : ""} ${className}`} viewBox="0 0 24 24" aria-hidden="true">

@@ -4,19 +4,20 @@ import Icon from "@/components/Icon";
 import { Button, Field, Menu, MenuItem } from "@/components/ui";
 import { api, smartleadRow } from "@/lib/client";
 import { FIELD_LIST, missing, render as fill } from "@/lib/personalize";
+import type { Copy, Shared } from "@/lib/types";
 
 // Write your email once; the preview shows it for a real lead.
-export default function EmailView({ data, copy, setCopy, toast }) {
+export default function EmailView({ data, copy, setCopy, toast }: Shared) {
   const [subject, setSubject] = useState(copy.subject || "");
   const [body, setBody] = useState(copy.body || "");
   const [status, setStatus] = useState("");
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const [leadLink, setLeadLink] = useState("");
-  const lastFocus = useRef("body");
-  const subjectRef = useRef(null), bodyRef = useRef(null);
+  const lastFocus = useRef<"subject" | "body">("body");
+  const subjectRef = useRef<HTMLInputElement>(null), bodyRef = useRef<HTMLTextAreaElement>(null);
 
   // Load the saved copy once it arrives.
-  const loadedFor = useRef(null);
+  const loadedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (copy.updated && loadedFor.current !== copy.updated && subject === "" && body === "") {
       setSubject(copy.subject || ""); setBody(copy.body || "");
@@ -33,17 +34,17 @@ export default function EmailView({ data, copy, setCopy, toast }) {
 
   async function save() {
     try {
-      const saved = await api("/api/copy", { subject, body });
+      const saved = await api<Copy>("/api/copy", { subject, body });
       setCopy(saved); setStatus(""); toast("Email saved");
-    } catch (e) { setStatus(e.message); }
+    } catch (e) { setStatus((e as Error).message); }
   }
   useEffect(() => {
-    const onKey = e => { if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); } };
+    const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); } };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  function insert(field) {
+  function insert(field: string) {
     const tag = `{{${field}}}`;
     const isSubject = lastFocus.current === "subject";
     const el = isSubject ? subjectRef.current : bodyRef.current;
