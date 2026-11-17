@@ -13,7 +13,7 @@ You describe who you're looking for (your ICP: ideal customer profile), for exam
 - 🔗 **Collects profiles**: website, LinkedIn, Facebook, Instagram, X, TikTok, podcast.
 - ⭐ **Scores every lead** from 0 to 100: *Top fit*, *Good fit*, *Possible* or *Low fit*.
 - 🧠 **Learns from you**: rate leads Good, Medium or Low and it finds more like your Good ones.
-- ✉️ **Sends to Smartlead** (or exports a CSV), with your email copy filled in for each lead.
+- ✉️ **Sends the data to your Sequencer for cold email outreach** (or exports a CSV), with your email copy filled in for each lead.
 
 <br>
 
