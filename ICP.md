@@ -18,6 +18,10 @@ How to edit
 > Your ideal lead in plain words. Every channel's meaning (description + last 30 days
 > of video titles) is compared to this: "ICP match" in the fit score, and searches skip
 > channels whose meaning is far from it.
+>
+> Soft note (a small +4 fit bonus, not a rule; other leads are still good):
+> - Channels named after the person, e.g. "Skot Waldron", "Michael Laidler", "David Brownlee".
+> - Podcasts, especially leadership and business podcasts hosted by the coach.
 
 Executive coach, leadership coach and management consultant who helps CEOs, executives,
 managers and teams. Leadership development, team building, corporate training, public

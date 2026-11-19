@@ -28,6 +28,7 @@ import math
 import html
 import json
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -48,6 +49,68 @@ try:
     import dns.exception
 except ImportError:
     dns = None
+# ---- Backup address lookup: home routers sometimes fail to look up a site
+# (e.g. quietandstrong.com) while public DNS answers fine. When the Mac's own
+# lookup fails, Cloudflare (1.1.1.1) and Google (8.8.8.8) are asked instead.
+_system_getaddrinfo = socket.getaddrinfo
+_public_dns_cache, _public_dns_lock = {}, threading.Lock()
+
+
+def _public_dns_lookup(host):
+    with _public_dns_lock:
+        if host in _public_dns_cache:
+            return _public_dns_cache[host]
+    ips = []
+    if dns is not None:
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = ["1.1.1.1", "8.8.8.8", "1.0.0.1"]
+        try:
+            ips = [r.address for r in resolver.resolve(host, "A", lifetime=6)]
+        except Exception:
+            ips = []
+    with _public_dns_lock:
+        _public_dns_cache[host] = ips
+    return ips
+
+
+def _getaddrinfo_with_backup(host, port, family=0, type=0, proto=0, flags=0):
+    try:
+        return _system_getaddrinfo(host, port, family, type, proto, flags)
+    except socket.gaierror:
+        name = host.decode() if isinstance(host, bytes) else str(host or "")
+        if not name or re.fullmatch(r"[\d.:]+", name) or name.endswith(".local") or name == "localhost":
+            raise
+        ips = _public_dns_lookup(name)
+        if not ips:
+            raise
+        results = []
+        for ip in ips:
+            results += _system_getaddrinfo(ip, port, family, type, proto, flags)
+        return results
+
+
+socket.getaddrinfo = _getaddrinfo_with_backup
+_lookup_ok_cache = {}
+
+
+def needs_backup_lookup(host):
+    """True when the Mac's own lookup fails for this host but public DNS knows it
+    (the browser then gets that site through LeadTube's own connection)."""
+    if not host or re.fullmatch(r"[\d.:]+", host):
+        return False
+    with _public_dns_lock:
+        if host in _lookup_ok_cache:
+            return _lookup_ok_cache[host]
+    try:
+        _system_getaddrinfo(host, 443)
+        result = False
+    except socket.gaierror:
+        result = bool(_public_dns_lookup(host))
+    with _public_dns_lock:
+        _lookup_ok_cache[host] = result
+    return result
+
+
 try:
     import tldextract            # correct domain matching for .co.uk, .com.au ...
     _TLD = tldextract.TLDExtract(suffix_list_urls=())   # bundled list, no network needed
@@ -63,11 +126,13 @@ from settings import ROOT, DATA_DIR, RESULTS_DIR, ENV_FILE, env, set_env  # noqa
 import icp  # noqa: E402  (ICP.md: the one file that describes who you're looking for)
 import learning  # noqa: E402  (learns from your Good / Medium / Low ratings)
 import semantic  # noqa: E402  (meaning fingerprints; optional, needs fastembed)
-import variations  # noqa: E402  (extra search phrases with the same meaning)
+import variations  # noqa: E402
+import guests  # noqa: E402  (extra search phrases with the same meaning)
 
 ICP_SKIP_BELOW = 0.55     # during searches, skip channels whose meaning is this far from your ideal lead (ICP.md)
 # "How many" counts leads at this fit level or better (Find new leads -> Count).
 FIT_GOALS = {"top": 75, "good": 55, "possible": 35}
+GUEST_SHARE = 0.28        # about 28% of each run's searches look up guests of your podcasts (finder/guests.py)
 FIT_GOAL_NAMES = {"top": "Top fit", "good": "Good fit or better", "possible": "Possible or better"}
 # During the search emails aren't looked up yet; email, website and LinkedIn add up to ~20
 # fit points later. This allowance stops good leads from being judged too harshly too early.
@@ -130,7 +195,7 @@ JUNK_EMAIL_PARTS = (
     "jdoe@", "jsmith@", "first@", "last@", "john.doe", "jane.doe", "jane.d@", "john.d@",
     "@company.com", "@yourcompany", "@yourdomain", "@domain.", "@mysite", "@website.com", "you@", "your@",
     "your.name", "yourname@", "name@company", "jane@", "john@example",
-    "johnsmith@", "john.smith@", "email.com", "yourname", "youremail", "name@", "user@",
+    "johnsmith@", "john.smith@", "email.com", "yourname", "youremail", "your.email", "your_email", "name@", "user@",
     "sentry", "wixpress", "@wix", "godaddy", "squarespace", "noreply", "no-reply",
     "donotreply", "@2x", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", "u003e",
 )
@@ -144,7 +209,15 @@ PLATFORM_EMAIL_DOMAINS = ("podchaser", "buzzsprout", "anchor.fm", "libsyn", "pod
                           "metricool.com", "hootsuite.com", "buffer.com", "later.com", "canva.com",
                           "mailchimp.com", "hubspot.com", "convertkit.com", "kit.com", "substack.com",
                           "godaddy.com", "wordpress.com", "shopify.com", "sentry.io", "example.com",
-                          "skool.com", "circle.so", "mn.co", "gumroad.com", "beehiiv.com", "teachable.com", "thinkific.com")
+                          "skool.com", "circle.so", "mn.co", "gumroad.com", "beehiiv.com", "teachable.com", "thinkific.com",
+                          # booking / calendar / form tools: their emails are the platform's, not the coach's
+                          "cal.com", "cal.eu", "acuityscheduling.com", "tidycal.com", "savvycal.com", "zcal.co",
+                          "youcanbook.me", "oncehub.com", "setmore.com", "simplybook.me", "appointlet.com",
+                          "honeybook.com", "dubsado.com", "hellobonsai.com", "typeform.com", "jotform.com",
+                          "paperform.co", "tally.so", "squareup.com", "square.site", "practicebetter.io",
+                          "simplepractice.com", "mindbodyonline.com", "vagaro.com", "booksy.com",
+                          "supercast.com", "terminusapp.com", "bitly.com", "rebrandly.com", "flodesk.com",
+                          "systeme.io", "kartra.com", "clickfunnels.com", "leadpages.com", "podia.com")
 FREE_MAIL_DOMAINS = {
     "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.co.uk",
     "live.com", "live.ca", "msn.com", "yahoo.com", "yahoo.co.uk", "yahoo.ca",
@@ -157,6 +230,8 @@ GOOD_ROLE_NAMES = {
     "enquiries", "enquiry", "inquiries", "inquiry", "connect", "booking", "bookings",
     "book", "coach", "coaching", "speaking", "media", "press", "partnerships",
     "partner", "business", "collab", "collabs", "work", "mail", "email",
+    "pr", "publicity", "events", "event", "podcast", "show", "studio", "talent", "agent", "management",
+    "assistant", "ea", "bookme", "speak", "interviews", "guests", "guest", "producer", "production",
 }
 # Generic inboxes kept only as a last resort, and only on the coach's own domain
 # (small coaching businesses often publish just support@ or help@).
@@ -183,6 +258,7 @@ NOT_A_WEBSITE = (
     "podbean.com", "buzzsprout.com", "anchor.fm", "libsyn.com", "simplecast.com", "captivate.fm",
     "transistor.fm", "spreaker.com", "acast.com", "podchaser.com", "redcircle.com", "audioboom.com",
     "goo.gl", "t.co", "wa.me", "whatsapp.", "calendly.com", "eventbrite.",
+    "cal.com", "tidycal.com", "savvycal.com", "acuityscheduling.com", "youcanbook.me", "oncehub.com", "zcal.co",
     "zoom.us", "gofundme", "goodreads.", "soundcloud.", "twitch.tv", "vimeo.com",
 )
 CONTACT_HINTS = ("contact", "about", "connect", "work-with", "workwithme", "hire",
@@ -207,6 +283,71 @@ def make_ssl_context():
 
 
 SSL_CONTEXT = make_ssl_context()
+
+try:
+    import httpx                 # faster requests: keeps connections open and reuses them (HTTP/2)
+except ImportError:
+    httpx = None
+
+_http_clients, _http_lock = {}, threading.Lock()
+
+
+class NetworkError(ConnectionError):
+    """The request never got an answer (DNS, refused, reset, timeout)."""
+
+
+def http_client(kind):
+    """One shared connection pool per kind, used by all threads:
+    "api" for YouTube and Serper, "web" for coaches' websites."""
+    with _http_lock:
+        if kind not in _http_clients:
+            web = kind in ("web", "browser")
+            _http_clients[kind] = httpx.Client(
+                http2=True, verify=SSL_CONTEXT, follow_redirects=(kind == "web"),
+                timeout=httpx.Timeout(20.0, connect=10.0),
+                limits=httpx.Limits(max_connections=48 if web else 24, max_keepalive_connections=24))
+        return _http_clients[kind]
+
+
+def api_request(method, url, params=None, body=None, headers=None, timeout=30):
+    """Calls a JSON API. Returns (status code, parsed JSON or {}).
+    Raises NetworkError when there is no answer at all."""
+    if httpx is not None:
+        try:
+            resp = http_client("api").request(method, url, params=params, json=body, headers=headers, timeout=timeout)
+        except httpx.TransportError as e:
+            raise NetworkError(str(e) or type(e).__name__) from e
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            return resp.status_code, {"_text": resp.text[:500]}
+    full = url + ("?" + urllib.parse.urlencode(params) if params else "")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(full, data=data, method=method,
+                                 headers={**(headers or {}), **({"Content-Type": "application/json"} if data else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.load(e)
+        except Exception:
+            return e.code, {}
+    except (urllib.error.URLError, ssl.SSLError, ConnectionError, TimeoutError, OSError) as e:
+        raise NetworkError(str(getattr(e, "reason", e))) from e
+
+
+def close_http_clients():
+    with _http_lock:
+        for client in _http_clients.values():
+            try:
+                client.close()
+            except Exception:
+                pass
+        _http_clients.clear()
+
+
+atexit.register(close_http_clients)
 
 
 class QuotaExceeded(Exception):
@@ -298,36 +439,9 @@ class YouTube:
         while True:
             with self._lock:
                 key = self.key
-            query = dict(params, key=key)
-            url = API_BASE + endpoint + "?" + urllib.parse.urlencode(query)
             try:
-                with urllib.request.urlopen(url, timeout=30, context=SSL_CONTEXT) as resp:
-                    data = json.load(resp)
-                self._tries.n = 0
-                with self._lock:
-                    name = self.label(key)
-                    self.usage[name] = self.usage.get(name, 0) + cost
-                return data
-            except urllib.error.HTTPError as e:
-                try:
-                    err = json.load(e)["error"]
-                    reason = (err.get("errors") or [{}])[0].get("reason", "")
-                    message = err.get("message", "")
-                except Exception:
-                    reason, message = "", str(e)
-                if reason in ("quotaExceeded", "dailyLimitExceeded"):
-                    with self._lock:
-                        self.usage[self.label(key)] = DAILY_QUOTA
-                        switched = key != self.key or self._switch_key()   # another thread may have switched already
-                    if switched:
-                        continue
-                    raise QuotaExceeded(message)
-                if reason == "rateLimitExceeded":
-                    raise QuotaExceeded(message)
-                if e.code == 404:
-                    return {"items": []}
-                raise ApiError(f"{e.code} {reason}: {message}")
-            except (urllib.error.URLError, ssl.SSLError, ConnectionError, TimeoutError) as e:
+                status, data = api_request("GET", API_BASE + endpoint, params=dict(params, key=key))
+            except NetworkError as e:
                 # A dropped connection shouldn't end the whole run: retry a few times first.
                 attempt = getattr(self._tries, "n", 0)
                 if attempt < 3:
@@ -335,7 +449,32 @@ class YouTube:
                     time.sleep(2 * (attempt + 1))
                     continue
                 self._tries.n = 0
-                raise ApiError(f"Network problem: {getattr(e, 'reason', e)}")
+                raise ApiError(f"Network problem: {e}")
+            if status == 200:
+                self._tries.n = 0
+                with self._lock:
+                    name = self.label(key)
+                    self.usage[name] = self.usage.get(name, 0) + cost
+                return data
+            err = data.get("error") if isinstance(data.get("error"), dict) else {}
+            reason = (err.get("errors") or [{}])[0].get("reason", "")
+            message = err.get("message", "") or f"HTTP {status}"
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                with self._lock:
+                    self.usage[self.label(key)] = DAILY_QUOTA
+                    switched = key != self.key or self._switch_key()   # another thread may have switched already
+                if switched:
+                    continue
+                raise QuotaExceeded(message)
+            if reason == "rateLimitExceeded":
+                raise QuotaExceeded(message)
+            if status == 404:
+                return {"items": []}
+            if status >= 500 and getattr(self._tries, "n", 0) < 3:
+                self._tries.n = getattr(self._tries, "n", 0) + 1
+                time.sleep(2 * self._tries.n)
+                continue
+            raise ApiError(f"{status} {reason}: {message}")
 
 
 def page_token(page_index, per_page=50):
@@ -403,8 +542,9 @@ def fetch_channels(yt, ids):
     return channels
 
 
+EMAIL_WORKERS = 12          # channels whose emails / websites are looked up at the same time
 RECENT_VIDEO_DAYS = 30      # titles of videos posted in this window are saved and read
-CHANNEL_WORKERS = 6         # channels checked at the same time during a search
+CHANNEL_WORKERS = 12        # channels checked at the same time during a search
 
 
 def recent_uploads(yt, playlist_id):
@@ -532,6 +672,8 @@ def fetch_page(url, timeout=15, max_bytes=2_000_000, attempts=3):
     (DNS lookups failing, connections reset, timeouts) are retried, because
     home routers often drop lookups when many sites are checked at once.
     Sites that refuse automated visitors (403) are left alone."""
+    if httpx is not None:
+        return _fetch_page_httpx(url, timeout, max_bytes, attempts)
     req = urllib.request.Request(url, headers={
         "User-Agent": BROWSER_UA,
         "Accept-Language": "en-US,en;q=0.9",
@@ -561,6 +703,37 @@ def fetch_page(url, timeout=15, max_bytes=2_000_000, attempts=3):
     return None, ""
 
 
+def _fetch_page_httpx(url, timeout, max_bytes, attempts):
+    """fetch_page over the shared connection pool (same rules, faster)."""
+    headers = {"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9",
+               "Accept": "text/html,application/xhtml+xml"}
+    for attempt in range(attempts):
+        try:
+            with http_client("web").stream("GET", url, headers=headers, timeout=timeout) as resp:
+                if resp.status_code >= 400:
+                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < attempts - 1:
+                        time.sleep(2 + 2 * attempt)
+                        continue
+                    return None, ""
+                ctype = resp.headers.get("Content-Type", "")
+                if "html" not in ctype and "text" not in ctype:
+                    return None, ""
+                raw = bytearray()
+                for chunk in resp.iter_bytes():
+                    raw += chunk
+                    if len(raw) >= max_bytes:
+                        break
+                return str(resp.url), bytes(raw[:max_bytes]).decode(resp.charset_encoding or "utf-8", "ignore")
+        except (httpx.TransportError, OSError):
+            if attempt < attempts - 1:
+                time.sleep(1.5 + 1.5 * attempt)
+                continue
+            return None, ""
+        except Exception:
+            return None, ""
+    return None, ""
+
+
 class LinkParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -581,6 +754,107 @@ class LinkParser(HTMLParser):
         if tag == "a" and self._href is not None:
             self.links.append((self._href, " ".join(self._text).strip().lower()))
             self._href = None
+
+
+def is_platform_email_domain(domain):
+    """True for a platform's domain (podcast hosts, site builders, booking tools
+    like cal.com). Names with a dot match the domain exactly or as a subdomain,
+    so 'cal.com' blocks cal.com and app.cal.com but not medical.com."""
+    domain = domain.lower()
+    for p in PLATFORM_EMAIL_DOMAINS:
+        if "." in p:
+            if domain == p or domain.endswith("." + p):
+                return True
+        elif p in domain:
+            return True
+    return False
+
+
+# Your preferred email order (best first). At most MAX_EMAILS are saved per lead.
+MAX_EMAILS = 2
+ROLE_EMAIL_ORDER = {"info": 3, "hello": 4, "hi": 4, "hey": 4, "contact": 5, "contactus": 5,
+                    "enquiries": 6, "enquiry": 6, "inquiries": 6, "inquiry": 6}
+
+
+def person_tokens(row, description=""):
+    """The host's own name, as email inboxes use it: 'lowry', 'jr' (from "J.R. Lowry"),
+    'stephanie'... Used to put the host's address before a colleague's."""
+    text = f"{row.get('channel_name', '')} {(description or row.get('description', ''))[:1500]}"
+    tokens = set()
+    for m in re.finditer(r"\b(?:host(?:ed by)?|i['’]m|i am|my name is|led by|founded by|with)[,:]?\s+(?:dr\.?\s+)?"
+                         r"((?:[A-Z]\.\s?){1,3}|[A-Z][a-z]+)\s*([A-Z][a-z]+)?", text):
+        first, last = m.group(1), m.group(2) or ""
+        if "." in first:
+            tokens.add(re.sub(r"[^a-z]", "", first.lower()))          # J.R. -> jr
+        elif first.lower() not in COMMON_NAME_WORDS:
+            tokens.add(first.lower())
+        if last and last.lower() not in COMMON_NAME_WORDS:
+            tokens.add(last.lower())
+    for word in re.findall(r"[A-Za-z]+", row.get("channel_name", "")):
+        # only words that look like a name ("Lowry", "Roula"), not "Sessions" or "Leadership"
+        if word[:1].isupper() and len(word) >= 3 and word.lower() not in COMMON_NAME_WORDS | GENERIC_OWNER_WORDS \
+                and (word in guests._dictionary_words()["names"] or not guests._everyday(word)):
+            tokens.add(word.lower())
+    return tuple(t for t in tokens if len(t) >= 2)
+
+
+def email_rank(email, site_domain="", owner_tokens=(), theirs=(), person=()):
+    """Sort key, lower is better:
+      0 name@company.com      a person's address on their own domain
+      1 company@gmail.com     the business's name on a free mailbox
+      2 name@gmail.com        a person's free mailbox
+      3 info@  4 hello@  5 contact@  6 enquiries@
+      7 other shared inboxes (pr@, media@, booking@ ...)  8 support@ / help@
+      9 someone else's address (a guest's gmail, another company) - last
+    An address counts as the coach's when it's on their website's domain, carries
+    their name / brand (owner_tokens), or they listed it themselves (theirs, e.g.
+    their Facebook Intro).
+    Above all of these: an address with the channel owner's own name (person:
+    'jr', 'lowry', 'roula') on any domain - @theircompany.com, @gmail.com or other.
+    Ties: on the coach's own website domain first."""
+    local, _, domain = email.lower().partition("@")
+    kind = email_kind(email.lower())
+    free = domain in FREE_MAIL_DOMAINS
+    sites = [site_domain] if isinstance(site_domain, str) else list(site_domain)
+    on_site = any(d and (domain_matches(domain, d) or same_brand(domain, d)) for d in sites)
+    owners = tuple(t for t in owner_tokens if len(t) >= 4)
+    belongs = on_site or email.lower() in theirs or (bool(owners) and _owner_email(email.lower(), owners)) \
+        or (free and any(t in local for t in owners))
+    if not belongs:
+        tier = 9
+    elif kind == "personal" and not free:
+        tier = 0
+    elif kind == "personal":
+        first = re.match(r"[a-z]+", local)
+        names = guests._dictionary_words()["names"]
+        starts_with_name = bool(first) and any(first.group(0)[:n].capitalize() in names for n in range(3, min(9, len(first.group(0))) + 1))
+        tier = 2 if starts_with_name else 1
+    elif kind == "role":
+        tier = ROLE_EMAIL_ORDER.get(re.sub(r"[^a-z]", "", local), 7)
+    else:
+        tier = 8
+    parts = [p for p in re.split(r"[._\-+\d]+", local) if p]
+    is_owner = any(t == local or t in parts or (len(t) >= 4 and local.startswith(t)) for t in person)
+    if is_owner and kind in ("personal", ""):
+        tier = -1                       # the channel owner's own address: best of all
+    return (tier, 0 if on_site else 1)
+
+
+def pick_emails(emails, facebook_emails, rank):
+    """Your rule: ONE email from their websites (or YouTube / web search) and ONE
+    from Facebook, the best of each. When Facebook has none, the best TWO from the
+    website instead. Best first."""
+    ranked = sorted(dict.fromkeys(emails), key=rank)
+    site = [e for e in ranked if e not in facebook_emails]
+    facebook = [e for e in ranked if e in facebook_emails]
+    picked = site[:1] + facebook[:1] if facebook else site[:2]
+    return sorted(picked, key=rank)
+
+
+def has_personal_email(emails, site_domain="", owner_tokens=()):
+    """True when one of the emails reaches the coach or their business directly
+    (name@company, company@gmail, name@gmail), not just a shared inbox."""
+    return any(email_rank(e, site_domain, owner_tokens)[0] <= 2 for e in emails)
 
 
 def email_kind(email):
@@ -650,7 +924,7 @@ def clean_emails(candidates, site_domain="", name_tokens=()):
             continue
         if any(part in email for part in JUNK_EMAIL_PARTS):
             continue
-        if any(p in email.split("@")[1] for p in PLATFORM_EMAIL_DOMAINS):
+        if is_platform_email_domain(email.split("@")[1]):
             continue
         seen.add(email)
         kind = email_kind(email)
@@ -803,12 +1077,23 @@ def allowed_by_robots(url):
         return True
 
 
+def _fetch_for_browser(request):
+    """One browser request made through LeadTube's connection pool instead."""
+    skip = {"host", "content-length", "accept-encoding", "connection"}
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+    resp = http_client("browser").request(request.method, request.url, headers=headers,
+                                          content=request.post_data_buffer, timeout=15)
+    out_headers = {k: v for k, v in resp.headers.items()
+                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding", "connection")}
+    return resp.status_code, out_headers, resp.content
+
+
 class BrowserRenderer:
     """One headless Chromium shared by the whole run, rendering up to 4 pages
     at the same time. It runs in its own thread with an asyncio loop, and the
     email-lookup threads hand it URLs and wait for the HTML."""
 
-    CONCURRENCY = 4
+    CONCURRENCY = 6
 
     def __init__(self):
         self._loop = None
@@ -841,12 +1126,25 @@ class BrowserRenderer:
         self._browser = await self._pw.chromium.launch(headless=True)
         self._context = await self._browser.new_context(user_agent=BROWSER_UA, locale="en-US")
 
-        async def block_heavy(route):
-            if route.request.resource_type in ("image", "media", "font"):
+        loop = asyncio.get_running_loop()
+
+        async def handle(route):
+            request = route.request
+            if request.resource_type in ("image", "media", "font"):
                 await route.abort()
-            else:
-                await route.continue_()
-        await self._context.route("**/*", block_heavy)
+                return
+            host = urllib.parse.urlparse(request.url).hostname or ""
+            if httpx is not None and await loop.run_in_executor(None, needs_backup_lookup, host):
+                # The router can't look this site up: fetch it through LeadTube's own
+                # connection (which falls back to public DNS) and hand it to the browser.
+                try:
+                    status, headers, body = await loop.run_in_executor(None, _fetch_for_browser, request)
+                    await route.fulfill(status=status, headers=headers, body=body)
+                except Exception:
+                    await route.abort()
+                return
+            await route.continue_()
+        await self._context.route("**/*", handle)
         self._sem = asyncio.Semaphore(self.CONCURRENCY)
 
     async def _render(self, url):
@@ -966,6 +1264,20 @@ EMAIL_PLATFORM_DOMAINS = ("wix", "sentry", "squarespace", "godaddy", "shopify", 
                           "apple.com", "spotify", "amazon", "stripe", "paypal", "zoom.us", "calendly")
 BIO_LINK_HOSTS = ("linktr.ee", "beacons.ai", "stan.store", "linkin.bio", "bio.link", "campsite.bio",
                   "tap.bio", "lnk.bio", "carrd.co", "hoo.be", "allmylinks.com", "solo.to", "msha.ke")
+
+
+SHORT_LINK_HOSTS = ("tiny.cc", "tinyurl.com", "bit.ly", "ow.ly", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
+                    "rb.gy", "is.gd", "t.ly", "lnkd.in", "bl.ink", "short.io", "tiny.one", "smarturl.it", "geni.us")
+
+
+def resolve_short_link(url):
+    """tiny.cc/xyz -> the page it points to (so a short link is never saved as the
+    coach's website). Returns the url unchanged if it isn't a short link."""
+    host = bare_domain(url)
+    if not any(host == h or host.endswith("." + h) for h in SHORT_LINK_HOSTS):
+        return url
+    final, _ = fetch_page(url, timeout=10, max_bytes=20_000, attempts=2)
+    return final or url
 
 
 def is_bio_page(url):
@@ -1097,12 +1409,21 @@ def _crawl_website(site_url, max_pages=5, fetch=None, owner_tokens=()):
         if any(h in path or h in text for h in CONTACT_HINTS):
             if full not in to_visit and full.rstrip("/") != final_url.rstrip("/"):
                 to_visit.append(full)
-    # contact pages first, then about pages
+    # The usual contact pages are tried even when the menu doesn't link them
+    # (menus built with JavaScript), then contact pages first, then about pages.
+    root = f"{urllib.parse.urlparse(final_url).scheme}://{urllib.parse.urlparse(final_url).netloc}"
+    for path in ("/contact", "/contact-us", "/about"):
+        if not any(urllib.parse.urlparse(u).path.rstrip("/").lower() == path for u in to_visit):
+            to_visit.append(root + path)
     to_visit.sort(key=lambda u: 0 if "contact" in u.lower() else 1)
 
-    for url in to_visit[: max_pages - 1]:
-        if found or other_domain:
-            break
+    def has_person_email():
+        return any(email_kind(e) == "personal" or (owner_tokens and _owner_email(e, owner_tokens))
+                   for e in found + other_domain)
+
+    for url in to_visit[: max_pages + 1]:
+        if has_person_email():
+            break                   # a person's own address found: done (shared inboxes alone don't stop it)
         if not allowed_by_robots(url):
             continue
         _, text = fetch(url)
@@ -1119,7 +1440,7 @@ def _crawl_website(site_url, max_pages=5, fetch=None, owner_tokens=()):
 
 # ---- Website memory: a site read recently isn't read again (re-runs are much faster).
 SITE_CACHE_FILE = DATA_DIR / "site_checks.json"
-SITE_CACHE_VERSION = 3          # bump when the email rules change, so every site is re-read once
+SITE_CACHE_VERSION = 4          # bump when the email rules change, so every site is re-read once
 SITE_RECHECK_DAYS = {True: 30, False: 14}   # site had an email: 30 days; no email: 14 days
 _site_cache = {"data": None, "dirty": False, "lock": threading.Lock()}
 
@@ -1159,6 +1480,8 @@ def find_website_details(site_url, max_pages=5, owner_tokens=()):
         if age < SITE_RECHECK_DAYS[bool(hit["emails"])]:
             return list(hit["emails"]), hit["source"], list(hit["links"])
     emails, source, links = _read_website(site_url, max_pages, owner_tokens)
+    if not emails and not links:
+        return emails, source, links     # couldn't be read at all (offline, lookup failed): try again next time
     with _site_cache["lock"]:
         _site_cache_data()["sites"][key] = {"date": today.strftime("%Y-%m-%d"), "emails": emails,
                                             "source": source, "links": links[:200]}
@@ -1196,7 +1519,9 @@ class WebSearch:
     directories and speaker bureaus, without visiting those sites."""
 
     def __init__(self, key, limit):
-        self.key = key
+        # One or more keys, comma-separated: when one runs out of credits the next is used.
+        self.keys = [k.strip() for k in key.split(",") if k.strip()]
+        self.key_index = 0
         self.limit = limit
         self.used = 0
         self.lock = threading.Lock()
@@ -1207,19 +1532,25 @@ class WebSearch:
             if self.disabled_reason or self.used >= self.limit:
                 return []
             self.used += 1
-        body = json.dumps({"q": query, "num": 10,
-                           "gl": {"GB": "uk"}.get(country, country.lower())}).encode()
-        req = urllib.request.Request("https://google.serper.dev/search", data=body, headers={
-            "X-API-KEY": self.key, "Content-Type": "application/json"})
+            key_index = self.key_index
+        body = {"q": query, "num": 10, "gl": {"GB": "uk"}.get(country, country.lower())}
         try:
-            with urllib.request.urlopen(req, timeout=20, context=SSL_CONTEXT) as resp:
-                data = json.load(resp)
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403, 429):
-                self.disabled_reason = ("Serper key rejected or out of credits"
-                                        if e.code != 429 else "Serper rate limit reached")
+            status, data = api_request("POST", "https://google.serper.dev/search", body=body, timeout=20,
+                                       headers={"X-API-KEY": self.keys[key_index]})
+        except NetworkError:
             return []
-        except Exception:
+        if status != 200:
+            out_of_credits = status in (401, 403) or (status == 400 and "credit" in json.dumps(data).lower())
+            if out_of_credits or status == 429:
+                with self.lock:
+                    if self.key_index == key_index and key_index + 1 < len(self.keys):
+                        self.key_index += 1            # switch to the backup key and try again
+                    elif self.key_index == key_index:
+                        self.disabled_reason = ("Serper rate limit reached" if status == 429
+                                                else "Serper keys rejected or out of credits")
+                        return []
+                    self.used -= 1
+                return self.search(query, country)
             return []
         results = []
         kg = data.get("knowledgeGraph") or {}
@@ -1374,6 +1705,104 @@ def facebook_email_search(searcher, row, site_domain, description=""):
     return [], "", fb_found
 
 
+def facebook_page_url(fb_url):
+    """A Facebook link as a page address the browser can open, or "" for groups,
+    share links and the like. Handles facebook.com/name, /people/Name/123 and
+    profile.php?id=123 (Facebook pages without a username use that)."""
+    target = _facebook_target(fb_url)
+    if not target:
+        return ""
+    if "profile.php?" in target:
+        return "https://www." + target
+    return "https://www." + target + "/"
+
+
+def facebook_intro_text(page_html):
+    """The text of a Facebook page's "Intro" box (about line, address, phone,
+    email, website): the contact details the page owner entered themselves."""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", page_html or "", flags=re.S)
+    text = re.sub(r"\s+", " ", html.unescape(text))
+    start = text.find("Intro ")
+    if start < 0:
+        return ""
+    end = min(i for i in (text.find(" Photos ", start), text.find(" Privacy ", start), start + 1500) if i > 0)
+    return text[start:end]
+
+
+def facebook_page_emails(fb_url, row, site_domain, description=""):
+    """Opens the coach's public Facebook page in the browser (no login, the same
+    page anyone sees) and reads its email. Free: no web-search credits.
+
+    Two checks, in order:
+      1. any email in the page's Intro box is the one the owner listed: always
+         kept, whatever its domain (even if it doesn't match their website);
+      2. any other email on the page (posts, comments) is kept only if it's on
+         their website's domain or carries their name, so event and guest
+         addresses are ignored."""
+    url = facebook_page_url(fb_url)
+    if not url or not RENDERER.available():
+        return [], ""
+    final_url, page_html = RENDERER.fetch(url)
+    if not page_html:
+        return [], ""
+    where = f"Facebook page: {final_url or url}"
+    # Whatever email the owner put in their Intro is theirs: no domain or name checks.
+    intro_text = facebook_intro_text(page_html)
+    intro_emails = list(dict.fromkeys(e.lower().strip(".") for e in emails_in_text(intro_text) if EMAIL_RE.fullmatch(e.lower().strip("."))))
+    if intro_emails:
+        return intro_emails, where
+
+    owner = owner_tokens_for(row, description) + tuple(name_tokens_for(_facebook_target(fb_url).split("/", 1)[-1]))
+    if site_domain:
+        owner += (registered_domain(site_domain).split(".")[0],)
+    found = []
+    for email in clean_emails(emails_in_text(page_html[:MAX_TEXT_FOR_EMAILS]), "", owner):
+        domain = email.partition("@")[2]
+        on_their_site = site_domain and (domain_matches(domain, site_domain) or same_brand(domain, site_domain))
+        if on_their_site or _owner_email(email, owner):
+            found.append(email)
+    return found, (where if found else "")
+
+
+OWNER_INTRO_RE = re.compile(r"\b(?:led by|hosted by|presented by|founded by|run by|created by|i['’]m|i am|my name is|"
+                            r"your host,?|meet)\s+", re.I)
+OWNER_NAME_WORD_RE = re.compile(r"^[A-Z][a-z]+(?:['’][A-Z][a-z]+)?$|^(?:Mc|Mac|La|De|Di|Le)[A-Z][a-z]+$")
+_dictionary = None
+
+
+def dictionary_words():
+    """The macOS word list: {"names": capitalised words (Mark, Betsy...),
+    "everyday": lower-case words (special, board...)}. Empty if it isn't there."""
+    global _dictionary
+    if _dictionary is None:
+        try:
+            words = Path("/usr/share/dict/words").read_text().split()
+        except OSError:
+            words = []
+        _dictionary = {"names": {w for w in words if w[:1].isupper()}, "everyday": {w for w in words if w.islower()}}
+    return _dictionary
+
+
+def owner_name_from(description, channel_name=""):
+    """The person behind a brand channel, from phrases like "Led by six times CEO
+    ... Mark Bilton" or "I'm Sarah Jones". Returns "" when the channel is already
+    named after them or no full name is given."""
+    not_names = COMMON_NAME_WORDS | GENERIC_OWNER_WORDS | {"the", "our", "your", "dr", "and", "in", "am", "is", "of"}
+    for intro in OWNER_INTRO_RE.finditer(description or ""):
+        words = re.findall(r"[A-Za-z][A-Za-z'’-]*", description[intro.end():intro.end() + 120])[:12]
+        for first, last in zip(words, words[1:]):
+            if not all(OWNER_NAME_WORD_RE.match(w) and w.lower() not in not_names for w in (first, last)):
+                continue
+            # A real name: a known first name, or two words that aren't everyday English
+            # ("Mark Bilton" yes; "Special Forces", "Board Advisor" no).
+            words_list = dictionary_words()
+            if first in words_list["names"] or not ({first.lower(), last.lower()} & words_list["everyday"]):
+                name = f"{first} {last}"
+                in_channel_name = any(w.lower() in (channel_name or "").lower() for w in (first, last))
+                return "" if in_channel_name else name
+    return ""
+
+
 SOCIAL_PATTERNS = [
     ("facebook", ("facebook.com/", "fb.com/", "fb.me/")),
     ("instagram", ("instagram.com/", "instagr.am/")),
@@ -1435,14 +1864,29 @@ def enrich_channel(row, description, check_websites, searcher=None, facebook_sea
                  re.findall(r"(?:https?://|www\.)[^\s<>\"']+", description)]
     about_urls = channel_about_links(row["channel_link"]) if check_websites else []
     all_urls = about_urls + [u for u in desc_urls if u not in about_urls]
+    if check_websites:
+        all_urls = list(dict.fromkeys(resolve_short_link(u) for u in all_urls))
 
     desc_emails = clean_emails(emails_in_text(description))
     emails, sources = list(desc_emails), (["YouTube description"] if desc_emails else [])
+    # Where each email came from. The final pick is ONE email from their websites /
+    # YouTube / web search and ONE from Facebook, the best of each (your rule).
+    where_of = {e: "YouTube description" for e in desc_emails}
+    fb_emails = set()
+
+    def note(found, where, facebook=False):
+        for e in found:
+            if facebook:
+                fb_emails.add(e)
+                where_of[e] = where          # on their Facebook too: credit Facebook for the second slot
+            else:
+                where_of.setdefault(e, where)
 
     # Link-in-bio pages (Linktree, Stan...) often list an email and the real website.
     if check_websites:
         for bio in [u for u in all_urls if is_bio_page(u)][:1]:
             bio_emails, bio_links = bio_page_details(bio)
+            note(bio_emails, bio)
             if bio_emails and not emails:
                 emails, sources = bio_emails, [bio]
             all_urls = all_urls + [u for u in bio_links if u not in all_urls]
@@ -1452,28 +1896,48 @@ def enrich_channel(row, description, check_websites, searcher=None, facebook_sea
         if is_own_website(u) and not is_bio_page(u) and \
                 bare_domain(u) not in [bare_domain(w) for w in websites]:
             websites.append(u)
-    if row.get("website") and bare_domain(row["website"]) not in [bare_domain(w) for w in websites]:
-        websites.append(row["website"])  # website saved by an earlier run
+    saved_site = resolve_short_link(row["website"]) if row.get("website") and check_websites else row.get("website", "")
+    if saved_site and is_own_website(saved_site) and not is_bio_page(saved_site) \
+            and bare_domain(saved_site) not in [bare_domain(w) for w in websites]:
+        websites.append(saved_site)  # website saved by an earlier run
+    # The person's own site first (jermoneglenn.com before kyncted.com), then in the order listed.
+    name_tokens = [t for t in owner_tokens_for(row, "") if len(t) >= 4]
+    handle = re.sub(r"[^a-z]", "", row.get("channel_link", "").rsplit("@", 1)[-1].lower()) if "/@" in row.get("channel_link", "") else ""
+
+    def named_after_them(site):
+        stem = re.sub(r"[^a-z]", "", registered_domain(bare_domain(site)).split(".")[0])
+        return bool(stem) and ((handle and (stem in handle or handle in stem)) or sum(t in stem for t in name_tokens) >= 2)
+    websites.sort(key=lambda w: 0 if named_after_them(w) else 1)
     linkedin = next((u for u in all_urls if "linkedin.com/" in u.lower() and not is_share_link(u)), "") \
         or row.get("linkedin", "")
     site_links = []
     read_sites = set()      # websites actually read (for emails AND social links)
 
+    own_sites = [bare_domain(w) for w in websites]
+
+    def enough(emails):
+        """The website slot is filled with the coach's own address (not just info@ / pr@): stop reading sites."""
+        return has_personal_email([e for e in emails if e not in fb_emails], own_sites, owner_tokens_for(row, description))
+
     if check_websites:
+        # Up to 3 of their websites are read (all of them linked on their channel),
+        # until one has the coach's own address.
         for site in websites[:3]:
             site_emails, where, links = find_website_details(site, owner_tokens=owner_tokens_for(row, description))
             read_sites.add(bare_domain(site))
             site_links += links
+            note(site_emails, where)
             new = [e for e in site_emails if e not in emails]
             if new:
                 emails += new
                 sources.append(where)
-            if emails:
+            if enough(emails):
                 break
 
     if not emails and searcher is not None:
         site_domain = bare_domain(websites[0]) if websites else ""
         found, where, site = search_for_email(searcher, row, site_domain)
+        note(found, where)
         if found:
             emails, sources = found, [where]
         if site and not websites:
@@ -1486,16 +1950,45 @@ def enrich_channel(row, description, check_websites, searcher=None, facebook_sea
                 site_emails, where, links = find_website_details(home, owner_tokens=owner_tokens_for(row, description))
                 read_sites.add(bare_domain(home))
                 site_links += links
+                note(site_emails, where)
                 if not emails and site_emails:
                     emails, sources = site_emails, [where]
 
     fb_found = ""
-    if not emails and facebook_searcher is not None:
-        site_domain = bare_domain(websites[0]) if websites else ""
-        fb_row = dict(row, facebook=row.get("facebook") or social_links(all_urls + site_links).get("facebook", ""))
+    keep_as_is = set()   # emails the coach listed on their Facebook page: always kept
+    site_domain = bare_domain(websites[0]) if websites else ""
+    own_sites = [bare_domain(w) for w in websites]
+    owner = owner_tokens_for(row, description) + tuple(registered_domain(d).split(".")[0] for d in own_sites if d)
+
+    def add_found(found, where):
+        nonlocal emails, sources
+        note(found, where, facebook=True)
+        emails = found + [e for e in emails if e not in found]
+        sources = [where] + sources
+
+    # Facebook fills the second slot: their public page is always checked (free);
+    # the paid Google search for it only when the coach's own email is still missing.
+    # 1) their public Facebook page (free, no search credits)
+    fb_link = row.get("facebook") or social_links(all_urls + site_links).get("facebook", "")
+    if fb_link and check_websites:
+        found, where = facebook_page_emails(fb_link, row, site_domain, description)
+        if found:
+            add_found(found, where)
+            keep_as_is.update(found)
+    # 2) Google results for their Facebook page
+    if not has_personal_email(emails, own_sites, owner) and facebook_searcher is not None:
+        fb_row = dict(row, facebook=fb_link)
         found, where, fb_found = facebook_email_search(facebook_searcher, fb_row, site_domain, description)
         if found:
-            emails, sources = found, [where]
+            add_found(found, where)
+        # A brand channel ("Lead Well Live Well, led by Mark Bilton"): search the owner's own name too.
+        owner_name = owner_name_from(description, row.get("channel_name"))
+        if not emails and owner_name:
+            owner_row = dict(row, channel_name=owner_name, facebook="")
+            found, where, _ = facebook_email_search(facebook_searcher, owner_row, site_domain, description)
+            if found:
+                note(found, where.replace("(Facebook)", f"({owner_name})"), facebook=True)
+                emails, sources = found, [where.replace("(Facebook)", f"({owner_name})")]
 
     row["website"] = websites[0] if websites else ""
     # Safety rule: whatever website is saved, however it was found, its social
@@ -1504,8 +1997,11 @@ def enrich_channel(row, description, check_websites, searcher=None, facebook_sea
         site_emails, where, links = find_website_details(row["website"], owner_tokens=owner_tokens_for(row, description))
         read_sites.add(bare_domain(row["website"]))
         site_links += links
-        if not emails and site_emails:
-            emails, sources = site_emails, [where]
+        note(site_emails, where)
+        new = [e for e in site_emails if e not in emails]
+        if new and not enough(emails):
+            emails += new
+            sources.append(where)
     profiles = social_links(all_urls)
     if fb_found and not profiles.get("facebook"):
         profiles["facebook"] = fb_found
@@ -1518,12 +2014,17 @@ def enrich_channel(row, description, check_websites, searcher=None, facebook_sea
         linkedin = next((u for u in site_links if "linkedin.com/" in u.lower() and not is_share_link(u)), "")
     row["linkedin"] = linkedin
     row.update(profiles)
-    emails = [e for e in emails if domain_accepts_mail(e.split("@")[1])]
-    if not emails:
-        sources = []
+    emails = [e for e in dict.fromkeys(emails) if e in keep_as_is or domain_accepts_mail(e.split("@")[1])]
+    # Best first in your preferred order; only the best MAX_EMAILS are kept.
+    own_sites = list(dict.fromkeys(own_sites + [bare_domain(w) for w in websites]))
+    owner = owner_tokens_for(row, description) + tuple(registered_domain(d).split(".")[0] for d in own_sites if d)
+    host = person_tokens(row, description)
+    emails = pick_emails(emails, fb_emails, lambda e: email_rank(e, own_sites, owner, keep_as_is, host))
+    row["_own_sites"] = own_sites           # for Fill missing emails' ranking (not saved)
+    row["_facebook_emails"] = [e for e in emails if e in fb_emails]
     row["best_email"] = emails[0] if emails else ""
-    row["emails"] = "; ".join(emails[:4])
-    row["email_source"] = "; ".join(sources)
+    row["emails"] = "; ".join(emails)
+    row["email_source"] = "; ".join(dict.fromkeys(where_of.get(e, "") for e in emails if where_of.get(e)))
     return row
 
 
@@ -1541,6 +2042,41 @@ FIT_AUTHOR = re.compile(r"\b(author of|my (new )?book|bestselling|best-selling|w
 FIT_ORG_TOPICS = icp.word_re("topics they work on")
 FIT_ORGANISATION = icp.word_re("organisations, not a person")
 FIT_OFF_NICHE = icp.word_re("not my icp: topics")
+PERSONAL_BRAND_POINTS = 4   # soft note in ICP.md: channels named after the person rank a bit higher
+NAME_PARTS_RE = re.compile(r"\s[|\-–—:•·~]\s|[|•·~:,()]|\s(?:with|by)\s", re.I)
+NAME_WORD_RE = re.compile(r"^[A-Z][a-z'’]+$|^(?:Mc|Mac|La|De|Di|Le)[A-Z][a-z]+$")
+NAME_SUFFIX_WORDS = {"coach", "coaching", "leadership", "executive", "speaker", "keynote", "consulting", "author", "md", "phd"}
+_everyday_words = None
+
+
+def everyday_words():
+    """Lower-case English words from the macOS word list (names are capitalised there)."""
+    global _everyday_words
+    if _everyday_words is None:
+        try:
+            _everyday_words = {w for w in Path("/usr/share/dict/words").read_text().split() if w.islower()}
+        except OSError:
+            _everyday_words = set()
+    return _everyday_words
+
+
+def is_personal_brand(channel_name, channel_link=""):
+    """True for channels named after a person: "Skot Waldron", "Dr. Grace Lee",
+    "Matt Foss | Leadership Coach". The name must look real: one of the two words
+    isn't an everyday English word, or the @handle spells it out."""
+    not_names = COMMON_NAME_WORDS | GENERIC_OWNER_WORDS
+    handle = re.sub(r"[^a-z]", "", (re.search(r"/@([^/?#]+)", channel_link or "") or [None, ""])[1].lower())
+    for part in NAME_PARTS_RE.split(channel_name or ""):
+        part = re.sub(r"^\s*(dr\.?|coach)\s+", "", part.strip(), flags=re.I)
+        words = re.findall(r"[A-Za-z][A-Za-z'’-]*", part)
+        if not 2 <= len(words) <= 5 or any(w.lower() not in NAME_SUFFIX_WORDS for w in words[2:]):
+            continue
+        first, last = words[:2]
+        if not all(NAME_WORD_RE.match(w) and w.lower() not in not_names for w in (first, last)):
+            continue
+        if any(w.lower() not in everyday_words() for w in (first, last)) or (first + last).lower() in handle:
+            return True
+    return False
 
 
 def fit_score(row, extra_text=""):
@@ -1576,6 +2112,9 @@ def fit_score(row, extra_text=""):
         score += 3
     if FIT_ORG_TOPICS.search(text) and FIT_ROLE.search(text):
         score += 5
+    if is_personal_brand(row.get("channel_name"), row.get("channel_link")):
+        score += PERSONAL_BRAND_POINTS
+        reasons.append("named after the person")
 
     email_source = row.get("email_source") or ""
     if row.get("best_email"):
@@ -2127,13 +2666,31 @@ def fill_missing_emails(args):
         checks = {}
     recent = (datetime.now() - timedelta(days=WEB_SEARCH_RECHECK_DAYS)).strftime("%Y-%m-%d")
 
-    need_email = [r for r in rows if not r.get("emails")]
-    need_profiles = [r for r in rows if r.get("emails") and (r.get("website") or "").strip()
+    def lead_emails(r):
+        return [e.strip().lower() for e in (r.get("emails") or "").split(";") if e.strip()]
+
+    def lead_owner(r):
+        site = bare_domain(r["website"]) if r.get("website") else ""
+        return site, owner_tokens_for(r, r.get("description", "")) + ((registered_domain(site).split(".")[0],) if site else ())
+
+    def only_shared_inboxes(r):
+        """Has emails, but only info@ / pr@ / enquiries@ style ones: worth checking Facebook for the owner's own."""
+        emails = lead_emails(r)
+        return bool(emails) and not has_personal_email(emails, *lead_owner(r))
+
+    need_email = [r for r in rows if not r.get("emails") or only_shared_inboxes(r)
+                  or len(lead_emails(r)) < MAX_EMAILS]
+    shared_links = {r["channel_link"] for r in need_email if r.get("emails") and only_shared_inboxes(r)}
+    shared_only = len(shared_links)
+    one_links = {r["channel_link"] for r in need_email if r.get("emails") and r["channel_link"] not in shared_links}
+    one_email = len(one_links)
+    need_profiles = [r for r in rows if r.get("emails") and r not in need_email and (r.get("website") or "").strip()
                      and any(not r.get(k) for k in PROFILE_KEYS)]
     serper_key = "" if args.no_web_search else load_serper_key(args.serper_key)
     searcher = WebSearch(serper_key, args.web_search_limit) if serper_key else None
-    print(f"{len(need_email)} channels have no email; {len(need_profiles)} others are missing "
-          f"some social profiles. Checking them (no YouTube quota)...")
+    print(f"{len(need_email) - shared_only - one_email} channels have no email, {shared_only} only have shared "
+          f"inboxes (info@, pr@...), {one_email} have one email (looking for a second); "
+          f"{len(need_profiles)} others are missing some social profiles. Checking them (no YouTube quota)...")
     before_profiles = sum(1 for r in rows for k in ["linkedin", *PROFILE_KEYS[1:]] if r.get(k))
 
     def work_email(r):
@@ -2143,9 +2700,30 @@ def fill_missing_emails(args):
         found = enrich_channel(dict(r), r.get("description", ""), not args.no_websites,
                                None if searched_recently else searcher,
                                facebook_searcher=None if fb_recently else searcher)
-        for k in ("best_email", "emails", "email_source", "website", "linkedin", *SOCIAL_FIELDS):
+        old = lead_emails(r)
+        for k in ("website", "linkedin", *SOCIAL_FIELDS):
             if found.get(k):
                 r[k] = found[k]
+        # Old and new emails are ranked together (your preferred order); the best MAX_EMAILS are kept,
+        # so an email found earlier is never lost just because its search wasn't repeated.
+        new = lead_emails(found)
+        if new:
+            site, owner = lead_owner(r)
+            site = found.get("_own_sites") or site
+            theirs = set(found.get("_facebook_emails") or [])
+            merged = [e for e in dict.fromkeys(new + old)
+                      if not is_platform_email_domain(e.split("@")[1]) and not any(p in e for p in JUNK_EMAIL_PARTS)]
+            host = person_tokens(r, r.get("description", ""))
+            # One from their websites, one from Facebook (earlier emails count as website ones
+            # unless Facebook gave them again now).
+            facebook = set(found.get("_facebook_emails") or [])
+            best = pick_emails(merged, facebook, lambda e: email_rank(e, site, owner, theirs, host))
+            if best != old[:MAX_EMAILS]:
+                r["best_email"], r["emails"] = best[0], "; ".join(best)
+                sources = [found.get("email_source", "")] if any(e in new for e in best) else []
+                if any(e in old for e in best) and r.get("email_source"):
+                    sources.append(r["email_source"])
+                r["email_source"] = "; ".join(dict.fromkeys(x for x in sources if x))
         today_str = datetime.now().strftime("%Y-%m-%d")
         if searcher and not searched_recently:
             checks[r["channel_link"]] = today_str
@@ -2165,7 +2743,7 @@ def fill_missing_emails(args):
 
     jobs = [(work_email, r) for r in need_email] + [(work_profiles, r) for r in need_profiles]
     done = 0
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=EMAIL_WORKERS) as pool:
         for fut in as_completed([pool.submit(fn, r) for fn, r in jobs]):
             try:
                 fut.result()
@@ -2174,7 +2752,7 @@ def fill_missing_emails(args):
             done += 1
             if done % 20 == 0 or done == len(jobs):
                 print(f"  {done}/{len(jobs)} checked, "
-                      f"{sum(1 for r in need_email if r.get('emails'))} new emails")
+                      f"{sum(1 for r in need_email if r.get('emails')) - shared_only - one_email} new emails")
 
     for col in ("fit_score", "fit_label", "fit_reason")[::-1]:
         if col not in fields:
@@ -2190,7 +2768,13 @@ def fill_missing_emails(args):
     save_site_cache()
     sync_run_files(rows)
     after_profiles = sum(1 for r in rows for k in ["linkedin", *PROFILE_KEYS[1:]] if r.get(k))
-    print(f"\nNew emails found:        {sum(1 for r in need_email if r.get('emails'))}")
+    print(f"\nNew emails found:        {sum(1 for r in need_email if r.get('emails')) - shared_only - one_email}")
+    if one_email:
+        second = sum(1 for r in need_email if r["channel_link"] in one_links and len(lead_emails(r)) >= MAX_EMAILS)
+        print(f"Second email found:      {second} of {one_email} leads that had one")
+    if shared_only:
+        better = sum(1 for r in need_email if r["channel_link"] in shared_links and not only_shared_inboxes(r))
+        print(f"Owner's own email found: {better} of {shared_only} leads that only had shared inboxes")
     print(f"New social profiles:     {after_profiles - before_profiles}")
     print(f"Channels with an email:  {sum(1 for r in rows if r.get('emails'))} of {len(rows)}")
     if searcher:
@@ -2232,6 +2816,8 @@ def main():
     p.add_argument("--web-search-limit", type=int, default=400,
                    help="max Serper searches per run (2 per channel at most). Default 400")
     p.add_argument("--serper-key", help="Serper.dev API key (default: SERPER_API_KEY in .env)")
+    p.add_argument("--no-guests", action="store_true",
+                   help="don't search the guests of your podcast leads (normally ~28%% of searches)")
     p.add_argument("--include-known", action="store_true",
                    help="also return channels already in all_channels.csv")
     p.add_argument("--fill-missing", action="store_true",
@@ -2426,6 +3012,16 @@ def main():
     skipped = {"known": 0, "country": 0, "inactive": 0, "off-topic": 0, "off-ICP meaning": 0, "unlike your ratings": 0}
     searches_run, stopped_early, interrupted = 0, None, False
 
+    # Guest search (finder/guests.py): ~28% of searches look up the guests of your
+    # podcast leads; the channels found are checked like any other result.
+    planner, guest_searches = None, 0
+    if not args.keywords and not args.no_guests:
+        seeds = guests.seed_podcasts(load_master(), learning.load_ratings())
+        if seeds:
+            planner = guests.GuestPlanner(yt, seeds)
+            print(f"Guest search: {len(seeds)} podcast channels to read guests from "
+                  f"({len(planner.state['searched'])} guests already searched in earlier runs).")
+
     def evaluate(ch, term):
         """Checks one channel (country, niche, your ratings, recent activity).
         Returns (skip reason, None) or ("kept", (row, description)). Runs in parallel."""
@@ -2496,8 +3092,34 @@ def main():
             else:
                 skipped[status] += 1
 
+    def guest_search():
+        """One guest search. Returns False when there are no guests left to search."""
+        nonlocal planner, searches_run, guest_searches
+        nxt = planner.next_guest()
+        if nxt is None:
+            print("  (guest search: every guest of your podcasts is searched; keywords only from here)")
+            planner = None
+            return False
+        guest, seed_name, seed_id = nxt
+        ids = planner.search(guest, seed_name, seed_id)
+        searches_run += 1
+        guest_searches += 1
+        new_ids = [i for i in ids if i not in seen and i not in known_ids]
+        seen.update(new_ids)
+        before = len(kept)
+        if new_ids:
+            check_channels(new_ids, f"guest: {guest}")
+        gained = len(kept) - before
+        planner.record(guest, seed_name, gained)
+        print(f"  guest   | {guest[:22]:22} (from {seed_name[:18]:18}) -> {gained:2} new kept  ("
+              + (f"{on_goal[0]}/{target} {args.fit_goal}-fit, {len(kept)} kept" if target else f"{len(kept)}")
+              + f", ~{yt.units_used} units used)")
+        return True
+
     try:
         while not target or on_goal[0] < target:
+            if planner and guest_searches < GUEST_SHARE * (searches_run + 1) and guest_search():
+                continue
             key = next_search()
             if key is None:
                 stopped_early = ("every search phrase is used up for now; add phrases to "
@@ -2569,7 +3191,7 @@ def main():
     rows, done = [], 0
     if interrupted:
         kept, rows = [], [row for row, _ in kept]
-    pool = ThreadPoolExecutor(max_workers=6)
+    pool = ThreadPoolExecutor(max_workers=EMAIL_WORKERS)
     futures = {pool.submit(enrich_channel, dict(row), desc, not args.no_websites, searcher): row
                for row, desc in kept}
     try:
@@ -2592,6 +3214,8 @@ def main():
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     for r in rows:
+        r.pop("_own_sites", None)
+        r.pop("_facebook_emails", None)
         apply_fit(r, r.pop("_titles", ""))
     rows.sort(key=lambda r: (-r["fit_score"], -int(r["subscribers"] or 0)))
 
@@ -2602,7 +3226,10 @@ def main():
     print(f"NEW channels this run:    {len(rows)}")
     print(f"  with an email:          {sum(1 for r in rows if r['emails'])}")
     print(f"  strong niche match:     {sum(1 for r in rows if r['niche_match'] == 'strong')}")
-    print(f"Searches run:             {searches_run}")
+    print(f"Searches run:             {searches_run}" + (f"  ({guest_searches} guest searches)" if guest_searches else ""))
+    from_guests = sum(1 for r in rows if str(r.get("found_by", "")).startswith("guest: "))
+    if from_guests:
+        print(f"  found through guests:   {from_guests} of {len(rows)} new channels")
     if target:
         print(f"Goal: {on_goal[0]} of {target} new leads looked {FIT_GOAL_NAMES[args.fit_goal]} during the search "
               f"({len(kept)} kept in total; final fit scores below include emails found).")

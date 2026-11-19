@@ -243,17 +243,21 @@ function msUntilPacificMidnight() {
   const next = new Date(la); next.setHours(24, 0, 0, 0);
   return next.getTime() - la.getTime();
 }
+// Serper credits left, added up over all keys (SERPER_API_KEY may hold several, comma-separated).
 async function serperBalance(refresh: boolean): Promise<number | null> {
   const cache = G.serperCache;
   if (!refresh && Date.now() - cache.at < 10 * 60 * 1000) return cache.value;
-  const key = (await readEnv()).SERPER_API_KEY;
-  let value: number | null = null;
-  if (key) {
+  const keys = ((await readEnv()).SERPER_API_KEY || "").split(",").map(k => k.trim()).filter(Boolean);
+  const balances = await Promise.all(keys.map(async key => {
     try {
       const res = await fetch("https://google.serper.dev/account", { headers: { "X-API-KEY": key }, signal: AbortSignal.timeout(8000) });
-      if (res.ok) value = (await res.json()).balance ?? null;
-    } catch {}
-  }
+      return res.ok ? (((await res.json()) as { balance?: number }).balance ?? null) : null;
+    } catch {
+      return null;
+    }
+  }));
+  const known = balances.filter((b): b is number => typeof b === "number");
+  const value = known.length ? known.reduce((sum, b) => sum + b, 0) : null;
   G.serperCache = { at: Date.now(), value };
   return value;
 }

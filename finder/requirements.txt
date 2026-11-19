@@ -3,4 +3,5 @@ playwright>=1.47
 dnspython>=2.6
 tldextract>=5.1
 certifi>=2024.2.2
+httpx[http2]>=0.28   # faster requests: reuses connections (optional; falls back to the built-in way)
 fastembed>=0.9   # meaning fingerprints (optional; LeadTube works without it)
